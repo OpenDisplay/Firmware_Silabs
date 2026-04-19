@@ -1,0 +1,6 @@
+{
+  "sdkRoot" : "/home/jonas/.silabs/slt/installs/conan/p/simpl965e19baece23/p/",
+  "apackRoot" : "/home/jonas/.silabs/slt/installs/conan/p/simpl965e19baece23/p/bluetooth_bgbuild",
+  "partOpn" : "efr32bg22c222f352gm40",
+  "boards" : "none"
+}

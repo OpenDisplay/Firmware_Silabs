@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="ASCII"?>
+<model:MDescriptors xmlns:model="http://www.silabs.com/ss/Studio.ecore">
+  <descriptors name="opendisplay-bg22">
+    <properties key="projectCommon.sdkId" value="com.silabs.sdk.stack.sisdk:2025.12.2._-962032165563987570"/>
+    <properties key="universalConfig.relativeWorkspacePath" value="../opendisplay-bg22.slcw"/>
+    <properties key="universalConfig.generationDirectory" value=""/>
+    <properties key="universalConfig.toolchainCompatibility" value="iar llvm gcc"/>
+    <properties key="projectCommon.overwriteCopiedSources" value="false"/>
+    <properties key="projectCommon.boardIds" value="com.silabs.board.none:0.0.0"/>
+    <properties key="projectCommon.kitId" value=""/>
+    <properties key="projectCommon.partId" value="mcu.arm.efr32.bg22.efr32bg22c222f352gm40"/>
+    <properties key="projectCommon.toolchainId" value="com.silabs.ss.framework.project.core.noToolChain:0.0.0"/>
+    <properties key="universalConfig.projectTypeIds" value="cmake"/>
+    <properties key="projectCommon.importModeId" value="COPY"/>
+    <properties key="universalConfig.compSelProjInstanceId" value="1775507624591"/>
+  </descriptors>
+</model:MDescriptors>

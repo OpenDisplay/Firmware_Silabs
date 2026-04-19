@@ -1,0 +1,26 @@
+#CRC Codes for initially generated config files -- do not modify!
+app_assert_config.h=2088525855
+btconf/gatt_configuration.btconf=881151263
+nvm3_default_config.h=2103899018
+psa_crypto_config.h=947431538
+sl_bgapi_config.h=1469720325
+sl_bluetooth_advertiser_config.h=-528435836
+sl_bluetooth_config.h=1271372458
+sl_bluetooth_connection_config.h=-1036090200
+sl_bt_host_adaptation_config.h=-55810347
+sl_btctrl_config.h=427212554
+sl_btctrl_scheduler_priority_config.h=-356938789
+sl_clock_manager_oscillator_config.h=700839570
+sl_clock_manager_tree_config.h=-375122953
+sl_core_config.h=-1854422791
+sl_device_init_dcdc_config.h=1406119698
+sl_mbedtls_config.h=-3899725
+sl_mbedtls_device_config.h=-287029762
+sl_memory_manager_config.h=-21294862
+sl_memory_manager_region_config.h=-1380016140
+sl_power_manager_config.h=-547418261
+sl_rail_util_pa_config.h=543671908
+sl_rail_util_pa_tables_config.h=1796393858
+sl_rail_util_power_manager_init_config.h=-905768668
+sl_rail_util_pti_config.h=1201181873
+sl_sleeptimer_config.h=1108469985

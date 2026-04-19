@@ -1,0 +1,26 @@
+# CMake / Ninja (all toolchains)
+cmake_gcc/build/
+cmake_iar/build/
+cmake_llvm/build/
+
+# Staged release copies (build-and-flash.sh)
+artifacts/
+
+# Simplicity Studio / SLT local state
+.projectlinkstore
+*.sls.user
+*.slcp.user
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Python (e.g. tooling under third_party)
+__pycache__/
+*.py[cod]
+.Python
+
+# Optional local overrides (secrets, machine paths)
+scripts/env.local.sh

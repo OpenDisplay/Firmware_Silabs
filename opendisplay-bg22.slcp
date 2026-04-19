@@ -1,0 +1,113 @@
+# Silicon Labs Project Configuration Tools: slcp, v0, Component selection file.
+project_name: opendisplay-bg22
+label: opendisplay-bg22
+description: |
+  A minimal project structure, that serves as a starting point for custom Bluetooth applications. The application starts advertising after boot and restarts advertising after a connection is closed.
+category: Bluetooth Examples
+filter:
+- name: Device Type
+  value:
+  - SoC
+- name: Project Difficulty
+  value:
+  - Beginner
+- name: Wireless Technology
+  value:
+  - Bluetooth
+package: bluetooth_le_app
+quality: production
+readme:
+- path: readme.md
+source:
+- path: app.c
+- path: opendisplay_ble.c
+- path: opendisplay_pipe.c
+- path: opendisplay_config_storage.c
+- path: opendisplay_config_parser.c
+- path: opendisplay_led.c
+- path: od_rtt.c
+- path: third_party/segger_rtt/SEGGER_RTT.c
+tag:
+- hwfilter:device:device_supports_bluetooth
+- hwfilter:device:device_series_2
+include:
+- path: .
+  file_list:
+  - path: app.h
+sdk:
+  vendor: silabs
+  id: simplicity_sdk
+  version: 2025.12.2
+toolchain_settings: [
+  ]
+component:
+- package: simplicity_sdk
+  vendor: silabs
+  id: EFR32BG22C222F352GM40
+- package: simplicity_sdk
+  vendor: silabs
+  id: app_assert
+- package: simplicity_sdk
+  vendor: silabs
+  id: app_os_helper
+- package: simplicity_sdk
+  vendor: silabs
+  id: bluetooth_feature_connection_role_peripheral
+- package: simplicity_sdk
+  vendor: silabs
+  id: bluetooth_feature_gatt
+- package: simplicity_sdk
+  vendor: silabs
+  id: bluetooth_feature_gatt_server
+- package: simplicity_sdk
+  vendor: silabs
+  id: bluetooth_feature_dynamic_gattdb
+- package: simplicity_sdk
+  vendor: silabs
+  id: bluetooth_feature_legacy_advertiser
+- package: simplicity_sdk
+  vendor: silabs
+  id: bluetooth_feature_sm
+- package: simplicity_sdk
+  vendor: silabs
+  id: bluetooth_feature_system
+- package: simplicity_sdk
+  vendor: silabs
+  id: bluetooth_stack
+- package: simplicity_sdk
+  vendor: silabs
+  id: clock_manager
+- package: simplicity_sdk
+  vendor: silabs
+  id: device_init
+- package: simplicity_sdk
+  vendor: silabs
+  id: gatt_configuration
+- package: simplicity_sdk
+  vendor: silabs
+  id: mpu
+- package: simplicity_sdk
+  vendor: silabs
+  id: rail_util_pti
+- package: simplicity_sdk
+  vendor: silabs
+  id: sl_main
+other_file:
+- path: image/readme_img0.png
+- path: image/readme_img1.png
+- path: image/readme_img2.png
+- path: image/readme_img3.png
+- path: image/readme_img4.png
+configuration:
+- name: SL_STACK_SIZE
+  value: '2752'
+- condition:
+  - psa_crypto
+  name: SL_PSA_KEY_USER_SLOT_COUNT
+  value: '0'
+ui_hints:
+  highlight:
+  - path: config/btconf/gatt_configuration.btconf
+  - path: readme.md
+    focus: true
+

@@ -1,0 +1,127 @@
+
+
+/*###ICF### Section handled by ICF editor, don't touch! ****/
+/*-Editor annotation file-*/
+/* IcfEditorFile="$TOOLKIT_DIR$\config\ide\IcfEditor\cortex_v1_0.xml" */
+/* Version 4.1.1 */
+
+/*-Memory Regions*/
+  define symbol __ICFEDIT_region_ROM_start__ = 0x0;
+  define symbol __ICFEDIT_region_ROM_end__   = (0x0+0x56000-1);
+  define symbol __ICFEDIT_region_RAM_start__ = 0x20000000;
+  define symbol __ICFEDIT_region_RAM_end__   = (0x20000000+0x8000-1);
+
+/**** End of ICF editor section. ###ICF###*/
+define memory mem with size = 4G;
+define region ROM_region   = mem:[from __ICFEDIT_region_ROM_start__   to __ICFEDIT_region_ROM_end__];
+define region RAM_region   = mem:[from __ICFEDIT_region_RAM_start__   to __ICFEDIT_region_RAM_end__];
+define region MAIN_FLASH_region   = mem:[from 0x0   to (0x0+0x56000-1)];
+
+/* Symbol exported to the application. */
+define exported symbol __ram_end__ = (__ICFEDIT_region_RAM_end__ + 1);
+
+/* Symbol used internally by the linker script. */
+
+define block CSTACK with alignment = 8
+{
+  section .stack
+};
+define block MEMORY_MANAGER_HEAP with expanding size, alignment = 8
+{
+  section .memory_manager_heap
+};
+
+
+define block nvm with alignment = 8192
+{
+  section SIMEE,
+};
+keep { block nvm };
+
+define block storage with alignment = 8192
+{
+  section INTERNAL_STORAGE,
+};
+keep { block storage };
+define block application with fixed order
+{
+  readonly section .intvec,
+  readonly
+};
+
+define block text_application_ram with alignment = 32
+{
+  readwrite code section text_application_ram,
+};
+
+define block text_application_ram_init with alignment = 32
+{
+  readonly code section text_application_ram_init,
+};
+define block ram_alignment_padding with alignment = 32 {};
+keep { block ram_alignment_padding };
+
+define block text_ram with alignment = 32, fixed order
+{
+  block text_application_ram,
+  block ram_alignment_padding,
+};
+
+define block text_ram_init with alignment = 32
+{
+  block text_application_ram_init,
+};
+
+initialize manually
+{
+  readonly section text_application_ram,
+};
+
+define block application_ram with fixed order
+{
+  block CSTACK,
+  readwrite,
+};
+
+initialize by copy { readwrite };
+
+define block application_heap with fixed order
+{
+  block MEMORY_MANAGER_HEAP
+};
+
+do not initialize
+{
+ section .noinit,
+ section .stack,
+  section .memory_manager_heap
+};
+
+keep { section .intvec };
+"application":
+place at start of ROM_region
+{
+  block application,
+  block text_ram_init,
+};
+
+"storage_regions":
+place at end of MAIN_FLASH_region {
+  block storage,
+  block nvm,
+};
+
+"application_ram":
+place at start of RAM_region {
+  block application_ram,
+};
+"ram_code":
+place in RAM_region {
+  block text_ram,
+};
+
+"application_heap":
+place in RAM_region {
+  block application_heap,
+};
+

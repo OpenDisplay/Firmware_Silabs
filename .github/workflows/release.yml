@@ -1,0 +1,134 @@
+name: Firmware BG22 Release
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+    working-directory: cmake_gcc
+
+jobs:
+  build-and-attach:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc-arm-none-eabi binutils-arm-none-eabi \
+            libnewlib-arm-none-eabi libstdc++-arm-none-eabi-dev \
+            libstdc++-arm-none-eabi-newlib
+
+      - name: Install Simplicity Commander (OTA .gbl)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends curl unzip libusb-1.0-0
+          curl -fsSL -o /tmp/SimplicityCommander-Linux.zip \
+            "https://www.silabs.com/documents/public/software/SimplicityCommander-Linux.zip"
+          unzip -q /tmp/SimplicityCommander-Linux.zip -d /tmp/sl_outer
+          shopt -s nullglob
+          case "${RUNNER_ARCH:-X64}" in
+            X64) tb=(/tmp/sl_outer/SimplicityCommander-Linux/Commander-cli_linux_x86_64_*.tar.bz) ;;
+            ARM64) tb=(/tmp/sl_outer/SimplicityCommander-Linux/Commander-cli_linux_aarch64_*.tar.bz) ;;
+            *) echo "Unsupported RUNNER_ARCH=${RUNNER_ARCH:-}" >&2; exit 1 ;;
+          esac
+          shopt -u nullglob
+          if [[ ${#tb[@]} -eq 0 || ! -f "${tb[0]}" ]]; then
+            echo "No Commander CLI tarball (expected Commander-cli_linux_* under SimplicityCommander-Linux/)" >&2
+            ls -la /tmp/sl_outer/SimplicityCommander-Linux >&2 || true
+            exit 1
+          fi
+          mkdir -p /tmp/sl_cli
+          tar xjf "${tb[0]}" -C /tmp/sl_cli
+          bin=$(find /tmp/sl_cli -type f -name commander-cli -executable | head -n1)
+          if [[ -z "${bin}" || ! -x "${bin}" ]]; then
+            echo "commander-cli not found under /tmp/sl_cli" >&2
+            find /tmp/sl_cli -type f 2>/dev/null | head -40 >&2 || true
+            exit 1
+          fi
+          "${bin}" --version
+          echo "COMMANDER=${bin}" >> "${GITHUB_ENV}"
+
+      - name: Parse version from release tag
+        id: ver
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          if [[ "${VERSION}" == *.* ]]; then
+            MINOR=$(echo "$VERSION" | cut -d. -f2)
+            [[ -z "${MINOR}" ]] && MINOR=0
+          else
+            MINOR=0
+          fi
+          if ! [[ "${MAJOR}" =~ ^[0-9]+$ && "${MINOR}" =~ ^[0-9]+$ ]]; then
+            echo "Tag must look like vMAJOR.MINOR (e.g. v1.4). Got: ${TAG}"
+            exit 1
+          fi
+          if (( MAJOR > 255 || MINOR > 255 )); then
+            echo "MAJOR and MINOR must be 0..255"
+            exit 1
+          fi
+          APPVER=$(printf '0x%02x%02x' "${MAJOR}" "${MINOR}")
+          SLVER=$(( (MAJOR << 8) | MINOR ))
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "major=${MAJOR}" >> "${GITHUB_OUTPUT}"
+          echo "minor=${MINOR}" >> "${GITHUB_OUTPUT}"
+          echo "appver=${APPVER}" >> "${GITHUB_OUTPUT}"
+          echo "slver=${SLVER}" >> "${GITHUB_OUTPUT}"
+          echo "Parsed ${TAG} -> OD_APP_VERSION=${APPVER} SL_APPLICATION_VERSION=${SLVER}"
+
+      - name: Configure and build (version baked into firmware)
+        working-directory: ${{ github.workspace }}
+        env:
+          ARM_GCC_DIR: /usr
+          NINJA_EXE_PATH: /usr/bin/ninja
+          OD_GENERATE_GBL_OTA: "OFF"
+          OD_APP_VERSION: ${{ steps.ver.outputs.appver }}
+          OD_SL_APPLICATION_VERSION: ${{ steps.ver.outputs.slver }}
+        run: |
+          set -euo pipefail
+          export OPENDISPLAY_BUILD_ID="v${{ steps.ver.outputs.version }}+${GITHUB_SHA:0:7}"
+          ./build-and-flash.sh --no-flash --no-artifacts
+
+      - name: Verify OTA .gbl
+        run: test -f "${GITHUB_WORKSPACE}/cmake_gcc/build/base/opendisplay-bg22.gbl"
+
+      - name: Stage release assets
+        id: stage
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          REL="${GITHUB_WORKSPACE}/cmake_gcc/release"
+          mkdir -p "$REL"
+          cp -f "build/base/opendisplay-bg22.s37" "$REL/opendisplay-bg22-v${V}.s37"
+          [[ -f "build/base/opendisplay-bg22.hex" ]] && cp -f "build/base/opendisplay-bg22.hex" "$REL/opendisplay-bg22-v${V}.hex" || true
+          [[ -f "build/base/opendisplay-bg22.gbl" ]] && cp -f "build/base/opendisplay-bg22.gbl" "$REL/opendisplay-bg22-v${V}.gbl" || true
+          [[ -f "build/base/bootloader-apploader.s37" ]] && cp -f "build/base/bootloader-apploader.s37" "$REL/bootloader-apploader-v${V}.s37" || true
+          ls -la "$REL"
+          mapfile -t paths < <(find "$REL" -maxdepth 1 -type f | sort)
+          printf 'Uploading %d file(s)\n' "${#paths[@]}"
+          printf '%s\n' "${paths[@]}"
+          {
+            echo 'release_files<<EOF'
+            printf '%s\n' "${paths[@]}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: ${{ steps.stage.outputs.release_files }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
