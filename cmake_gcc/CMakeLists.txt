@@ -10,6 +10,9 @@ project(
 
 option(OD_ENABLE_RTT "Enable SEGGER RTT logging backend" ON)
 option(OD_GENERATE_GBL_OTA "After link, run Simplicity Commander to create OTA .gbl next to .s37" ON)
+option(OD_TNB132M_BOOT_PROBE "At boot read TNB132M NDEF via Type-3 AI@0x48 + data@0x40 (log over RTT)" OFF)
+option(OD_TNB132M_WRITE_NDEF "With BOOT_PROBE: before the read, write OD_TNB132M_NDEF_TEXT as a Text record" OFF)
+set(OD_TNB132M_NDEF_TEXT "OpenDisplay" CACHE STRING "UTF-8 text (lang=en) written when OD_TNB132M_WRITE_NDEF=ON; max 25 chars")
 
 set(OD_APP_VERSION "0x0019" CACHE STRING "16-bit BLE app version (hex, high byte=major, low=minor)")
 set(OPENDISPLAY_BUILD_ID "bg22-dev" CACHE STRING "Firmware version string (GATT 0x0043 / build id)")
@@ -22,6 +25,9 @@ include(opendisplay-bg22.cmake)
 # main.c and other app sources live in target `slc`; they must see OD_ENABLE_RTT when compiled.
 target_compile_definitions(slc PUBLIC
 	OD_ENABLE_RTT=$<IF:$<BOOL:${OD_ENABLE_RTT}>,1,0>
+	OD_TNB132M_BOOT_PROBE=$<IF:$<BOOL:${OD_TNB132M_BOOT_PROBE}>,1,0>
+	OD_TNB132M_WRITE_NDEF=$<IF:$<BOOL:${OD_TNB132M_WRITE_NDEF}>,1,0>
+	"OD_TNB132M_NDEF_TEXT=\"${OD_TNB132M_NDEF_TEXT}\""
 	SL_APP_PROPERTIES=1
 	"OD_APP_VERSION=${OD_APP_VERSION}"
 	"OPENDISPLAY_BUILD_ID=\"${OPENDISPLAY_BUILD_ID}\""

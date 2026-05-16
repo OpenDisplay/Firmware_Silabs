@@ -1105,20 +1105,26 @@ const uint8_t epd35yr_init_fast[] PROGMEM =
 
 const uint8_t epd42yr_init_full[] PROGMEM =
 {
-   0x02, 0x4d, 0x78,
-   0x03, 0x00, 0x0f, 0x29,
-   0x08, 0x06, 0x0d, 0x12, 0x24, 0x25, 0x12, 0x29, 0x10, // BTST
-   0x02, 0x30, 0x08,
-   0x02, 0x50, 0x37,
-   0x05, UC8151_TRES, 0x01, 144, 0x01, 44, // resolution (400x300)
-   0x02, 0xae, 0xcf,
-   0x02, 0xb0, 0x13,
-   0x02, 0xbd, 0x07,
-   0x02, 0xbe, 0xfe,
-   0x02, 0xe9, 0x01,
-   0x01, 0x04, // power on
-   BUSY_WAIT,
-   0
+    0x02, 0x4d, 0x78,
+    0x03, 0x00, 0x0f, 0x09,
+    0x07, 0x01, 0x07, 0x00, 0x22, 0x78, 0x0a, 0x22,
+    0x04, 0x03, 0x10, 54, 0x44,
+    0x08, 0x06, 0x0f, 0x0a, 0x2f, 0x25 ,0x22, 0x2e, 0x21,
+    0x02, 0x30, 0x08,
+    0x02, 0x41, 0x00,
+    0x02, 0x50, 0x37,
+    0x03, 0x60, 0x02, 0x02,
+    0x05, UC8151_TRES, 0x01, 144, 0x01, 44, // resolution (400x300)
+    0x05, 0x65, 0x00, 0x00, 0x00, 0x00,
+    0x02, 0xe7, 0x1c,
+    0x02, 0xe3, 0x22,
+    0x02, 0xe0, 0x00,
+    0x02, 0xb4, 0xd0,
+    0x02, 0xb5, 0x03,
+    0x02, 0xe9, 0x01,
+    0x01, 0x04, // power on
+    BUSY_WAIT,
+    0
 };
 
 const uint8_t epd42yr_init_fast[] PROGMEM =
@@ -3264,7 +3270,7 @@ const EPD_PANEL panelDefs[] PROGMEM = {
     {200, 200, 0, epd154yr_init_full, epd154yr_init_fast, NULL, BBEP_4COLOR, BBEP_CHIP_UC81xx, u8Colors_4clr_v2}, // EP154YR_200x200
     {184, 360, 0, epd266yr_init_full, epd266yr_init_fast, NULL, BBEP_4COLOR, BBEP_CHIP_UC81xx, u8Colors_4clr_v2}, // EP266YR2_184x360
 // 60
-    {400, 300, 0, epd42yr_init_full, epd42yr_init_fast, NULL, BBEP_4COLOR, BBEP_CHIP_UC81xx, u8Colors_4clr_v2}, // EP42YR_400x300
+    {400, 300, 0, epd42yr_init_full, epd42yr_init_fast, NULL, BBEP_4COLOR | BBEP_SKIP_BUSY_WAIT, BBEP_CHIP_UC81xx, u8Colors_4clr_v2}, // EP42YR_400x300
 //    {792, 272, 0, epd579yr_init_full, epd579yr_init_fast, NULL, BBEP_4COLOR, BBEP_CHIP_UC81xx, u8Colors_4clr_v2}, // EP579YR_792x272
     {160, 296, 0, epd215yr_init_full, epd215yr_init_full, NULL, BBEP_4COLOR, BBEP_CHIP_UC81xx, u8Colors_4clr_v2}, // EP215YR_160x296
     {680, 480, 0, epd1085_init_full, NULL, NULL, 0, BBEP_CHIP_UC81xx, u8Colors_2clr}, // EP1085_1360x480
@@ -3445,6 +3451,15 @@ bool bbepIsBusy(BBEPDISP *pBBEP)
 //
 // Toggle the reset line to wake up the eink from deep sleep
 //
+static void bbep_wait_busy_panel(BBEPDISP *pBBEP)
+{
+    if (pBBEP != NULL && (pBBEP->iFlags & BBEP_SKIP_BUSY_WAIT) != 0) {
+        delay(200);
+    } else {
+        bbepWaitBusy(pBBEP);
+    }
+}
+
 void bbepWakeUp(BBEPDISP *pBBEP)
 {
     if (!pBBEP) return;
@@ -3454,7 +3469,7 @@ void bbepWakeUp(BBEPDISP *pBBEP)
     delay(10);
     digitalWrite(pBBEP->iRSTPin, HIGH);
     delay(20);
-    bbepWaitBusy(pBBEP);
+    bbep_wait_busy_panel(pBBEP);
 } /* bbepWakeUp() */
 //
 // Set the memory window for future writes into panel memory
@@ -3568,7 +3583,7 @@ void bbepSleep(BBEPDISP *pBBEP, int bDeep)
             }
         } else if (pBBEP->iFlags & BBEP_4COLOR) {
             bbepCMD2(pBBEP, 0x02, 0x00); // power off
-            bbepWaitBusy(pBBEP);
+            bbep_wait_busy_panel(pBBEP);
             if (bDeep) {
                 bbepCMD2(pBBEP, 0x07, 0xa5); // deep sleep
             }
@@ -3661,7 +3676,7 @@ void bbepSendCMDSequence(BBEPDISP *pBBEP, const uint8_t *pSeq)
         if (iLen == MAKE_LUTS) {
             bbepMakeLUTs(pBBEP);
         } else if (iLen == BUSY_WAIT) {
-            bbepWaitBusy(pBBEP);
+            bbep_wait_busy_panel(pBBEP);
         } else if (iLen == EPD_RESET) {
             bbepWakeUp(pBBEP);
         } else {

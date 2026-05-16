@@ -365,6 +365,64 @@ bool parseConfigBytes(uint8_t* configData, uint32_t configLen, struct GlobalConf
                     offset = configLen - 2;
                 }
                 break;
+
+            case CONFIG_PKT_NFC: // nfc_config (0x2A)
+                if (offset > configLen) {
+                    printf("Offset overflow before nfc_config\r\n");
+                    globalConfig->loaded = false;
+                    return false;
+                }
+                if (globalConfig->nfc_config_count < 2 && offset + sizeof(struct NfcConfig) <= configLen - 2) {
+                    memcpy(&globalConfig->nfc_configs[globalConfig->nfc_config_count], &configData[offset], sizeof(struct NfcConfig));
+                    offset += sizeof(struct NfcConfig);
+                    if (offset > configLen) {
+                        printf("Offset overflow after nfc_config\r\n");
+                        globalConfig->loaded = false;
+                        return false;
+                    }
+                    globalConfig->nfc_config_count++;
+                } else if (globalConfig->nfc_config_count >= 2) {
+                    offset += sizeof(struct NfcConfig);
+                    if (offset > configLen) {
+                        printf("Offset overflow after nfc_config (skipped)\r\n");
+                        globalConfig->loaded = false;
+                        return false;
+                    }
+                } else {
+                    printf("nfc_config: need %zu, have %u\r\n", sizeof(struct NfcConfig), (unsigned)(configLen - 2 - offset));
+                    globalConfig->loaded = false;
+                    return false;
+                }
+                break;
+
+            case CONFIG_PKT_FLASH: // flash_config (0x2B)
+                if (offset > configLen) {
+                    printf("Offset overflow before flash_config\r\n");
+                    globalConfig->loaded = false;
+                    return false;
+                }
+                if (globalConfig->flash_config_count < 2 && offset + sizeof(struct FlashConfig) <= configLen - 2) {
+                    memcpy(&globalConfig->flash_configs[globalConfig->flash_config_count], &configData[offset], sizeof(struct FlashConfig));
+                    offset += sizeof(struct FlashConfig);
+                    if (offset > configLen) {
+                        printf("Offset overflow after flash_config\r\n");
+                        globalConfig->loaded = false;
+                        return false;
+                    }
+                    globalConfig->flash_config_count++;
+                } else if (globalConfig->flash_config_count >= 2) {
+                    offset += sizeof(struct FlashConfig);
+                    if (offset > configLen) {
+                        printf("Offset overflow after flash_config (skipped)\r\n");
+                        globalConfig->loaded = false;
+                        return false;
+                    }
+                } else {
+                    printf("flash_config: need %zu, have %u\r\n", sizeof(struct FlashConfig), (unsigned)(configLen - 2 - offset));
+                    globalConfig->loaded = false;
+                    return false;
+                }
+                break;
                 
             default:
                 printf("Unknown pkt 0x%02X @%u\r\n", packetId, (unsigned)(offset - 2));
@@ -384,9 +442,10 @@ bool parseConfigBytes(uint8_t* configData, uint32_t configLen, struct GlobalConf
     }
     
     globalConfig->loaded = true;
-    printf("Config parsed successfully: version=%d, displays=%d, leds=%d, sensors=%d, data_buses=%d, binary_inputs=%d\r\n",
+    printf("Config parsed successfully: version=%d, displays=%d, leds=%d, sensors=%d, data_buses=%d, binary_inputs=%d, nfc=%d, flash=%d\r\n",
                  globalConfig->version, globalConfig->display_count, globalConfig->led_count,
-                 globalConfig->sensor_count, globalConfig->data_bus_count, globalConfig->binary_input_count);
+                 globalConfig->sensor_count, globalConfig->data_bus_count, globalConfig->binary_input_count,
+                 globalConfig->nfc_config_count, globalConfig->flash_config_count);
     return true;
 }
 

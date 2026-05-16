@@ -5,6 +5,7 @@
 #include "opendisplay_epd_map.h"
 #include "opendisplay_structs.h"
 #include "bb_epaper.h"
+#include "em_cmu.h"
 #include "em_gpio.h"
 #include "em_system.h"
 #include "qr/qrcode.h"
@@ -61,6 +62,33 @@ static bool decode_pin(uint8_t v, GPIO_Port_TypeDef *port_out, uint8_t *pin_out)
   return true;
 }
 
+static void display_park_signal_pin(uint8_t pin_cfg)
+{
+  GPIO_Port_TypeDef port;
+  uint8_t pin;
+
+  if (!decode_pin(pin_cfg, &port, &pin)) {
+    return;
+  }
+  GPIO_PinModeSet(port, pin, gpioModeDisabled, 0);
+}
+
+void opendisplay_display_park_pins(void)
+{
+  const struct DisplayConfig *d = display_cfg();
+
+  if (d == nullptr) {
+    return;
+  }
+  CMU_ClockEnable(cmuClock_GPIO, true);
+  display_park_signal_pin(d->cs_pin);
+  display_park_signal_pin(d->data_pin);
+  display_park_signal_pin(d->clk_pin);
+  display_park_signal_pin(d->dc_pin);
+  display_park_signal_pin(d->reset_pin);
+  display_park_signal_pin(d->busy_pin);
+}
+
 static void display_power_set(bool on)
 {
   const struct GlobalConfig *cfg = opendisplay_get_global_config();
@@ -69,6 +97,10 @@ static void display_power_set(bool on)
   uint8_t pin;
   if (cfg == nullptr) {
     return;
+  }
+  CMU_ClockEnable(cmuClock_GPIO, true);
+  if (!on) {
+    opendisplay_display_park_pins();
   }
   p = cfg->system_config.pwr_pin;
   if (p == 0xFFu) {
@@ -80,13 +112,19 @@ static void display_power_set(bool on)
   GPIO_PinModeSet(port, pin, gpioModePushPull, on ? 1u : 0u);
 }
 
+void opendisplay_display_power_off(void)
+{
+  display_power_set(false);
+}
+
 typedef struct {
   char c;
   uint8_t col[5];
 } Glyph5x7;
 
 static const Glyph5x7 s_font5x7[] = {
-  { ' ', { 0, 0, 0, 0, 0 } },       { '.', { 0, 0, 0x40, 0, 0 } }, { '0', { 0x3E, 0x51, 0x49, 0x45, 0x3E } },
+  { ' ', { 0, 0, 0, 0, 0 } },       { '.', { 0, 0, 0x40, 0, 0 } }, { ':', { 0, 0x24, 0, 0, 0 } },
+  { '0', { 0x3E, 0x51, 0x49, 0x45, 0x3E } },
   { '1', { 0x00, 0x42, 0x7F, 0x40, 0x00 } }, { '2', { 0x62, 0x51, 0x49, 0x49, 0x46 } },
   { '3', { 0x22, 0x49, 0x49, 0x49, 0x36 } }, { '4', { 0x18, 0x14, 0x12, 0x7F, 0x10 } },
   { '5', { 0x2F, 0x49, 0x49, 0x49, 0x31 } }, { '6', { 0x3E, 0x49, 0x49, 0x49, 0x32 } },
@@ -122,7 +160,7 @@ static void set_pixel_row(uint8_t *row, int x, bool is4clr)
   }
 }
 
-static void draw_text_row(uint8_t *row, int y, int x0, int y0, const char *s, int scale, bool is4clr)
+static void draw_text_row(uint8_t *row, int y, int x0, int y0, const char *s, int scale, bool is4clr, int max_x)
 {
   int cursor = x0;
   const char *p;
@@ -145,7 +183,7 @@ static void draw_text_row(uint8_t *row, int y, int x0, int y0, const char *s, in
         px = cursor + col * scale;
         for (sx = 0; sx < scale; sx++) {
           int rx = px + sx;
-          if (rx >= 0) {
+          if (rx >= 0 && (max_x < 0 || rx < max_x)) {
             set_pixel_row(row, rx, is4clr);
           }
         }
@@ -161,6 +199,86 @@ static uint16_t text_width_px(const char *s, int scale)
     return 0u;
   }
   return (uint16_t)(strlen(s) * (size_t)(6 * scale));
+}
+
+static int boot_line_step(int scale)
+{
+  return scale * 10;
+}
+
+static int boot_block_h(int scale)
+{
+  return 4 * boot_line_step(scale) + 7 * scale;
+}
+
+static uint16_t boot_max_text_width(const char *const *lines, unsigned n, int scale)
+{
+  uint16_t max_w = 0u;
+  unsigned i;
+  for (i = 0u; i < n; i++) {
+    uint16_t tw = text_width_px(lines[i], scale);
+    if (tw > max_w) {
+      max_w = tw;
+    }
+  }
+  return max_w;
+}
+
+static bool boot_layout_fit(uint16_t w, uint16_t h, int scale, int pad, int qr_modules, int *module_px_out,
+                            int *qr_px_out, bool *qr_right_out, int *qr_x_out, int *qr_y_out, int *avail_w_out,
+                            int *text_y_out, uint16_t max_text_w)
+{
+  int block_h = boot_block_h(scale);
+  int text_gap = pad;
+  int side_gap = pad;
+  int module_px;
+  int qr_px;
+  int min_dim = (int)((w < h) ? w : h);
+  int module_ideal = (min_dim - pad * 2) / (int)qr_modules;
+  if (module_ideal < 1) {
+    module_ideal = 1;
+  }
+  if (module_ideal > 6) {
+    module_ideal = 6;
+  }
+
+  for (module_px = module_ideal; module_px >= 1; module_px--) {
+    qr_px = module_px * (int)qr_modules;
+    if (qr_px > (int)w - pad * 2) {
+      continue;
+    }
+    if ((int)w >= pad * 2 + (int)max_text_w + side_gap + qr_px
+        && (int)h >= pad * 2 + (block_h > qr_px ? block_h : qr_px)) {
+      int avail_w = (int)w - pad * 2 - qr_px - side_gap;
+      if ((int)max_text_w <= avail_w) {
+        int qr_x = (int)w - pad - qr_px;
+        int qr_y = pad;
+        int text_y = pad;
+        if (block_h < qr_px) {
+          text_y = pad + (qr_px - block_h) / 2;
+        }
+        *module_px_out = module_px;
+        *qr_px_out = qr_px;
+        *qr_right_out = true;
+        *qr_x_out = qr_x;
+        *qr_y_out = qr_y;
+        *avail_w_out = avail_w;
+        *text_y_out = text_y;
+        return true;
+      }
+    }
+    if ((int)w >= pad * 2 + (int)max_text_w && (int)h >= pad * 2 + block_h + text_gap + qr_px) {
+      *module_px_out = module_px;
+      *qr_px_out = qr_px;
+      *qr_right_out = false;
+      *qr_x_out = ((int)w - qr_px) / 2;
+      *qr_y_out = (int)h - pad - qr_px;
+      *avail_w_out = (int)w - pad * 2;
+      *text_y_out = pad;
+      return true;
+    }
+  }
+  return false;
 }
 
 static void bytes_to_hex(const uint8_t *in, uint16_t len, char *out, uint16_t out_size)
@@ -240,10 +358,11 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
   bool qr_right;
   int qr_x, qr_y, avail_w, text_y;
   char name_line[16];
+  char fw_line[16];
   const char *domain_line = "OPENDISPLAY.ORG";
   char key_hex[33];
   char k1[17], k2[17];
-  uint16_t dW, nW, k1W, k2W;
+  uint16_t dW, nW, fwW, k1W, k2W;
 
   if (cfg == nullptr || cfg->display_count == 0u) {
     return false;
@@ -285,31 +404,12 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
   qr_size = qr.size;
   qr_modules = (uint16_t)(qr_size + 8u);
 
-  scale_text = (w >= 400u && h >= 300u) ? 2 : 1;
-  pad = 6 * scale_text;
-  module_px = ((int)((w < h) ? w : h) - pad * 2) / (int)qr_modules;
-  if (module_px < 1) {
-    module_px = 1;
-  }
-  if (module_px > 6) {
-    module_px = 6;
-  }
-  qr_px = module_px * (int)qr_modules;
-  qr_right = (w >= (uint16_t)(qr_px + 160));
-  qr_x = qr_right ? ((int)w - pad - qr_px) : (((int)w - qr_px) / 2);
-  qr_y = qr_right ? pad : ((int)h - pad - qr_px);
-  avail_w = qr_right ? qr_x : (int)w;
-  text_y = pad;
-  if (qr_right) {
-    int block_h = 4 * (scale_text * 10) + 7 * scale_text;
-    if (qr_px > block_h) {
-      text_y = qr_y + (qr_px - block_h) / 2;
-    } else {
-      text_y = qr_y;
-    }
-  }
-
   (void)snprintf(name_line, sizeof(name_line), "OD%06lX", (unsigned long)last3);
+  {
+    uint16_t ver = opendisplay_ble_get_app_version();
+    (void)snprintf(fw_line, sizeof(fw_line), "FW: %u.%u",
+                   (unsigned)((ver >> 8) & 0xFFu), (unsigned)(ver & 0xFFu));
+  }
   bytes_to_hex(key, sizeof(key), key_hex, sizeof(key_hex));
   memcpy(k1, key_hex, 16);
   k1[16] = '\0';
@@ -317,21 +417,77 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
   k2[16] = '\0';
 
   {
+    static const char *boot_lines[] = {
+      domain_line, name_line, fw_line, k1, k2,
+    };
+    uint16_t max_text_w;
+    bool layout_ok = false;
+    int try_scale;
+
+    for (try_scale = (w >= 400u && h >= 300u) ? 2 : 1; try_scale >= 1 && !layout_ok; try_scale--) {
+      scale_text = try_scale;
+      pad = 6 * scale_text;
+      max_text_w = boot_max_text_width(boot_lines, 5u, scale_text);
+      layout_ok = boot_layout_fit(w, h, scale_text, pad, (int)qr_modules, &module_px, &qr_px, &qr_right, &qr_x,
+                                  &qr_y, &avail_w, &text_y, max_text_w);
+    }
+    if (!layout_ok) {
+      scale_text = 1;
+      pad = 6;
+      max_text_w = boot_max_text_width(boot_lines, 5u, scale_text);
+      module_px = 1;
+      qr_px = module_px * (int)qr_modules;
+      qr_right = false;
+      qr_x = ((int)w - qr_px) / 2;
+      qr_y = (int)h - pad - qr_px;
+      if (qr_y < pad) {
+        qr_y = pad;
+      }
+      avail_w = (int)w - pad * 2;
+      text_y = pad;
+    }
+  }
+
+  {
     static uint8_t s_boot_row[256];
     bool is4clr = (epd._bbep.iFlags & BBEP_4COLOR) != 0;
     bool is3clr = (epd._bbep.iFlags & BBEP_3COLOR) != 0;
     int pitch = is4clr ? ((int)w + 3) / 4 : ((int)w + 7) / 8;
     uint8_t white_byte = is4clr ? 0x55u : 0xFFu;
-    int domX, nameX, k1X, k2X, y;
+    int domX, nameX, fwX, k1X, k2X, y;
+    int text_max_x;
+    int text_origin_x;
 
     dW  = text_width_px(domain_line, scale_text);
     nW  = text_width_px(name_line, scale_text);
+    fwW = text_width_px(fw_line, scale_text);
     k1W = text_width_px(k1, scale_text);
     k2W = text_width_px(k2, scale_text);
-    domX  = (dW  < (uint16_t)avail_w) ? ((avail_w - (int)dW)  / 2) : pad;
-    nameX = (nW  < (uint16_t)avail_w) ? ((avail_w - (int)nW)  / 2) : pad;
-    k1X   = (k1W < (uint16_t)avail_w) ? ((avail_w - (int)k1W) / 2) : pad;
-    k2X   = (k2W < (uint16_t)avail_w) ? ((avail_w - (int)k2W) / 2) : pad;
+    text_origin_x = qr_right ? pad : ((int)w - (int)avail_w) / 2;
+    if (text_origin_x < pad) {
+      text_origin_x = pad;
+    }
+    text_max_x = qr_right ? (qr_x - pad) : (int)w;
+    domX  = text_origin_x + ((avail_w - (int)dW)  / 2);
+    nameX = text_origin_x + ((avail_w - (int)nW)  / 2);
+    fwX   = text_origin_x + ((avail_w - (int)fwW) / 2);
+    k1X   = text_origin_x + ((avail_w - (int)k1W) / 2);
+    k2X   = text_origin_x + ((avail_w - (int)k2W) / 2);
+    if (domX < pad) {
+      domX = pad;
+    }
+    if (nameX < pad) {
+      nameX = pad;
+    }
+    if (fwX < pad) {
+      fwX = pad;
+    }
+    if (k1X < pad) {
+      k1X = pad;
+    }
+    if (k2X < pad) {
+      k2X = pad;
+    }
 
     epd.setAddrWindow(0, 0, (int)w, (int)h);
     epd.startWrite(is4clr ? PLANE_1 : PLANE_0);
@@ -339,10 +495,13 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
     for (y = 0; y < (int)h; y++) {
       memset(s_boot_row, white_byte, (size_t)pitch);
 
-      draw_text_row(s_boot_row, y, domX,  text_y,                domain_line, scale_text, is4clr);
-      draw_text_row(s_boot_row, y, nameX, text_y + scale_text * 10, name_line,  scale_text, is4clr);
-      draw_text_row(s_boot_row, y, k1X,   text_y + scale_text * 30, k1, scale_text, is4clr);
-      draw_text_row(s_boot_row, y, k2X,   text_y + scale_text * 40, k2, scale_text, is4clr);
+      draw_text_row(s_boot_row, y, domX,  text_y,                      domain_line, scale_text, is4clr, text_max_x);
+      draw_text_row(s_boot_row, y, nameX, text_y + boot_line_step(scale_text), name_line, scale_text, is4clr,
+                    text_max_x);
+      draw_text_row(s_boot_row, y, fwX,   text_y + boot_line_step(scale_text) * 2, fw_line, scale_text, is4clr,
+                    text_max_x);
+      draw_text_row(s_boot_row, y, k1X,   text_y + boot_line_step(scale_text) * 3, k1, scale_text, is4clr, text_max_x);
+      draw_text_row(s_boot_row, y, k2X,   text_y + boot_line_step(scale_text) * 4, k2, scale_text, is4clr, text_max_x);
 
       if (y >= qr_y && y < qr_y + qr_px) {
         int local_y = y - qr_y;
