@@ -11,6 +11,8 @@
 #define CONFIG_PKT_BINARY_INPUT   0x25
 #define CONFIG_PKT_WIFI           0x26
 #define CONFIG_PKT_SECURITY       0x27
+#define CONFIG_PKT_NFC            0x2A
+#define CONFIG_PKT_FLASH          0x2B
 
 #define CONFIG_CHUNK_SIZE               200
 #define CONFIG_CHUNK_SIZE_WITH_PREFIX   202
@@ -18,5 +20,18 @@
 #define MAX_RESPONSE_DATA_SIZE          100
 
 #define GPIO_PIN_UNUSED 0xFF
+
+/* OpenDisplay config struct DataBus.bus_type (matches toolbox presets, e.g. 0x01 = I2C). */
+#define OD_BUS_TYPE_I2C 1u
+
+#define OD_NFC_IC_AUTO      0u
+#define OD_NFC_IC_TNB132M   1u
+
+#define OD_NFC_REC_TEXT             0u
+#define OD_NFC_REC_URI              1u
+#define OD_NFC_REC_WELL_KNOWN_RAW   2u
+/* BLE payload: [mime_type_len][mime_type ascii][mime body UTF-8] -> NDEF MIME (SR). */
+#define OD_NFC_REC_MIME             3u
+#define OD_NFC_REC_RAW_NDEF         4u
 
 #endif

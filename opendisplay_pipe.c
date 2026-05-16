@@ -39,6 +39,17 @@ static uint8_t s_long_write_conn = 0xFFu;
 static bool s_crypto_ready;
 static uint8_t s_plain_buf[512];
 static uint8_t s_crypto_payload_buf[513];
+static uint8_t s_nfc_rsp_buf[OD_PIPE_MAX_PAYLOAD];
+typedef struct {
+  bool active;
+  uint8_t connection;
+  uint8_t rec_type;
+  uint16_t total_len;
+  uint16_t received_len;
+  /* Match OD_NFC write staging (long MIME / vCard). */
+  uint8_t data[512];
+} od_nfc_write_chunk_t;
+static od_nfc_write_chunk_t s_nfc_write_chunk;
 
 #ifndef OD_ALLOW_PLAINTEXT_WITH_SECURITY
 #define OD_ALLOW_PLAINTEXT_WITH_SECURITY 0
@@ -49,6 +60,18 @@ static void pipe_send(uint8_t connection, const uint8_t *data, uint16_t len);
 static void cfg_chunk_reset(void)
 {
   memset(&s_cfg_chunk, 0, sizeof(s_cfg_chunk));
+}
+
+static void nfc_write_chunk_reset(void)
+{
+  memset(&s_nfc_write_chunk, 0, sizeof(s_nfc_write_chunk));
+  s_nfc_write_chunk.connection = 0xFFu;
+}
+
+static bool nfc_rec_type_valid(uint8_t rec_type)
+{
+  return rec_type == OD_NFC_REC_TEXT || rec_type == OD_NFC_REC_URI || rec_type == OD_NFC_REC_WELL_KNOWN_RAW
+         || rec_type == OD_NFC_REC_MIME || rec_type == OD_NFC_REC_RAW_NDEF;
 }
 
 static uint32_t od_now_ms(void)
@@ -815,6 +838,161 @@ static void handle_config_chunk(uint8_t connection, const uint8_t *data, uint16_
   }
 }
 
+static void handle_nfc_endpoint(uint8_t connection, const uint8_t *payload, uint16_t payload_len)
+{
+  uint16_t out_len;
+  uint8_t rec_type;
+
+  if (payload == NULL || payload_len < 1u) {
+    uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x01u };
+    pipe_send(connection, err, sizeof(err));
+    return;
+  }
+
+  if (payload[0] == 0x00u) {
+    uint16_t max_out = (uint16_t)(OD_PIPE_MAX_PAYLOAD - 6u);
+    out_len = max_out;
+    if (!opendisplay_ble_nfc_read(&rec_type, &s_nfc_rsp_buf[6], &out_len, max_out)) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x02u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    s_nfc_rsp_buf[0] = 0x00u;
+    s_nfc_rsp_buf[1] = RESP_NFC_ENDPOINT;
+    s_nfc_rsp_buf[2] = 0x80u;
+    s_nfc_rsp_buf[3] = rec_type;
+    s_nfc_rsp_buf[4] = (uint8_t)((out_len >> 8) & 0xFFu);
+    s_nfc_rsp_buf[5] = (uint8_t)(out_len & 0xFFu);
+    pipe_send(connection, s_nfc_rsp_buf, (uint16_t)(6u + out_len));
+    return;
+  }
+
+  if (payload[0] == 0x01u) {
+    uint16_t text_len;
+    if (payload_len < 4u) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x01u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    rec_type = payload[1];
+    text_len = (uint16_t)(((uint16_t)payload[2] << 8) | payload[3]);
+    if ((uint16_t)(4u + text_len) > payload_len) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x01u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    if (!nfc_rec_type_valid(rec_type)) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x05u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    if (!opendisplay_ble_nfc_write(rec_type, &payload[4], text_len)) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x03u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    {
+      uint8_t ok[] = { 0x00u, RESP_NFC_ENDPOINT, 0x81u };
+      pipe_send(connection, ok, sizeof(ok));
+    }
+    return;
+  }
+
+  if (payload[0] == 0x10u) {
+    uint16_t total_len;
+    if (payload_len < 4u) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x01u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    rec_type = payload[1];
+    total_len = (uint16_t)(((uint16_t)payload[2] << 8) | payload[3]);
+    if (!nfc_rec_type_valid(rec_type)) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x05u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    if (total_len == 0u || total_len > sizeof(s_nfc_write_chunk.data)) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x06u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    nfc_write_chunk_reset();
+    s_nfc_write_chunk.active = true;
+    s_nfc_write_chunk.connection = connection;
+    s_nfc_write_chunk.rec_type = rec_type;
+    s_nfc_write_chunk.total_len = total_len;
+    {
+      uint8_t ok[] = { 0x00u, RESP_NFC_ENDPOINT, 0x82u };
+      pipe_send(connection, ok, sizeof(ok));
+    }
+    return;
+  }
+
+  if (payload[0] == 0x11u) {
+    uint16_t chunk_len;
+    if (!s_nfc_write_chunk.active || s_nfc_write_chunk.connection != connection) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x07u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    if (payload_len < 2u) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x01u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    chunk_len = (uint16_t)(payload_len - 1u);
+    if ((uint16_t)(s_nfc_write_chunk.received_len + chunk_len) > s_nfc_write_chunk.total_len) {
+      nfc_write_chunk_reset();
+      {
+        uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x08u };
+        pipe_send(connection, err, sizeof(err));
+      }
+      return;
+    }
+    memcpy(&s_nfc_write_chunk.data[s_nfc_write_chunk.received_len], &payload[1], chunk_len);
+    s_nfc_write_chunk.received_len = (uint16_t)(s_nfc_write_chunk.received_len + chunk_len);
+    {
+      uint8_t ok[] = { 0x00u, RESP_NFC_ENDPOINT, 0x82u };
+      pipe_send(connection, ok, sizeof(ok));
+    }
+    return;
+  }
+
+  if (payload[0] == 0x12u) {
+    if (!s_nfc_write_chunk.active || s_nfc_write_chunk.connection != connection) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x07u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    if (s_nfc_write_chunk.received_len != s_nfc_write_chunk.total_len) {
+      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x09u };
+      pipe_send(connection, err, sizeof(err));
+      return;
+    }
+    if (!opendisplay_ble_nfc_write(s_nfc_write_chunk.rec_type, s_nfc_write_chunk.data,
+                                   s_nfc_write_chunk.total_len)) {
+      nfc_write_chunk_reset();
+      {
+        uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x03u };
+        pipe_send(connection, err, sizeof(err));
+      }
+      return;
+    }
+    nfc_write_chunk_reset();
+    {
+      uint8_t ok[] = { 0x00u, RESP_NFC_ENDPOINT, 0x81u };
+      pipe_send(connection, ok, sizeof(ok));
+    }
+    return;
+  }
+
+  {
+    uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x04u };
+    pipe_send(connection, err, sizeof(err));
+  }
+}
+
 static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, uint16_t payload_len)
 {
   uint8_t auth_rsp[32];
@@ -883,6 +1061,9 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
       pipe_send(connection, ok, sizeof(ok));
       break;
     }
+    case CMD_NFC_ENDPOINT:
+      handle_nfc_endpoint(connection, payload, payload_len);
+      break;
     case CMD_DIRECT_WRITE_START:
       handle_direct_write_start(connection, payload, payload_len);
       break;
@@ -971,6 +1152,7 @@ void opendisplay_pipe_on_connection_closed(void)
   s_long_write_len = 0;
   s_long_write_conn = 0xFFu;
   cfg_chunk_reset();
+  nfc_write_chunk_reset();
   opendisplay_display_abort();
 }
 

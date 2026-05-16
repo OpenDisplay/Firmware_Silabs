@@ -295,6 +295,7 @@ enum {
 #define BBEP_SPLIT_BUFFER 0x0400
 #define BBEP_HAS_SECOND_PLANE 0x0800
 #define BBEP_NEEDS_EXTRA_INIT 0x1000
+#define BBEP_SKIP_BUSY_WAIT   0x2000  /* skip BUSY_WAIT in init/wake/sleep; refresh still polls busy */
 
 #define BBEP_BLACK 0
 #define BBEP_WHITE 1

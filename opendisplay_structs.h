@@ -119,6 +119,42 @@ struct BinaryInputs {
   uint8_t reserved[14];
 } __attribute__((packed));
 
+struct NfcConfig {
+  uint8_t instance_number;
+  uint8_t nfc_ic_type;
+  uint8_t bus_instance;
+  uint8_t flags;
+  uint8_t field_detect_pin;
+  uint8_t field_detect_mode;
+  uint8_t field_detect_active;
+  uint8_t field_detect_debounce_ms;
+  uint8_t power_pin;
+  uint8_t power_active;
+  uint8_t power_on_delay_ms;
+  uint8_t power_off_delay_ms;
+  uint8_t adv_button_byte_index;
+  uint8_t adv_button_button_id;
+  uint8_t reserved_pin_1;
+  uint8_t reserved_pin_2;
+  uint8_t reserved[16];
+} __attribute__((packed));
+
+struct FlashConfig {
+  uint8_t instance_number;
+  uint8_t flash_ic_type;
+  uint8_t bus_instance;
+  uint8_t flags;
+  uint8_t mosi_pin;
+  uint8_t sck_pin;
+  uint8_t cs_pin;
+  uint8_t power_pin;
+  uint8_t power_active;
+  uint8_t power_on_delay_ms;
+  uint8_t power_off_delay_ms;
+  uint8_t mode;
+  uint8_t reserved[20];
+} __attribute__((packed));
+
 struct GlobalConfig {
   struct SystemConfig system_config;
   struct ManufacturerData manufacturer_data;
@@ -133,6 +169,10 @@ struct GlobalConfig {
   uint8_t data_bus_count;
   struct BinaryInputs binary_inputs[4];
   uint8_t binary_input_count;
+  struct NfcConfig nfc_configs[2];
+  uint8_t nfc_config_count;
+  struct FlashConfig flash_configs[2];
+  uint8_t flash_config_count;
   uint8_t version;
   uint8_t minor_version;
   bool loaded;

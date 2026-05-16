@@ -29,6 +29,12 @@ RTT_ENABLED=1
 DO_GBL_ONLY=0
 DO_CLEAN=0
 DO_MASS_ERASE="${DO_MASS_ERASE:-0}"
+NFC_BOOT_PROBE=0
+NFC_BOOT_PROBE_CLI=0
+NFC_WRITE_NDEF=0
+NFC_WRITE_NDEF_CLI=0
+NFC_NDEF_TEXT=""
+NFC_NDEF_TEXT_CLI=0
 
 usage() {
   cat <<EOF
@@ -40,6 +46,10 @@ Usage: $0 [options]
   --rtt               After flash: background J-Link RTT telnet + JLinkRTTClient
   --rtt-only          RTT only (no build/flash)
   --no-rtt            Build firmware with RTT disabled (OD_ENABLE_RTT=OFF)
+  --tnb132m-boot-probe  Build with OD_TNB132M_BOOT_PROBE=ON (read TNB132M NDEF at boot; use with --rtt)
+  --no-tnb132m-boot-probe  Build with OD_TNB132M_BOOT_PROBE=OFF (default; overrides env)
+  --tnb132m-write-ndef TEXT  Implies probe ON + OD_TNB132M_WRITE_NDEF=ON; writes Text record "TEXT" (<=25 chars, lang=en) before the read
+  --no-tnb132m-write-ndef    OD_TNB132M_WRITE_NDEF=OFF
   --no-bootloader     Do not flash bootloader image
   --no-ota-image      Do not generate OTA .gbl image
   --bootloader-art F  Explicit bootloader artifact (.s37/.hex)
@@ -62,7 +72,7 @@ Usage: $0 [options]
        RTT_BACKEND (gdbserver | exe, default gdbserver), RTT_GDBSERVER_ARGS,
        RTT_TELNET_PORT (default 19021), RTT_ARGS (extra args for JLinkRTTClient).
        Optional CMake (-D) when set: OPENDISPLAY_BUILD_ID, OD_APP_VERSION,
-       OD_SL_APPLICATION_VERSION, OD_GENERATE_GBL_OTA
+       OD_SL_APPLICATION_VERSION, OD_GENERATE_GBL_OTA, OD_TNB132M_BOOT_PROBE, OD_TNB132M_WRITE_NDEF, OD_TNB132M_NDEF_TEXT
 
   Default RTT_BACKEND=gdbserver: JLinkGDBServer stays connected (J-Link Commander often exits and breaks exe mode).
   If Commander stays open on your setup, try RTT_BACKEND=exe (JLinkExe + sleep infinity) instead.
@@ -78,6 +88,15 @@ while [[ $# -gt 0 ]]; do
     --rtt) DO_RTT=1 ;;
     --rtt-only) RTT_ONLY=1; DO_BUILD=0; DO_FLASH=0; DO_RTT=1 ;;
     --no-rtt) RTT_ENABLED=0 ;;
+    --tnb132m-boot-probe) NFC_BOOT_PROBE=1; NFC_BOOT_PROBE_CLI=1 ;;
+    --no-tnb132m-boot-probe) NFC_BOOT_PROBE=0; NFC_BOOT_PROBE_CLI=1 ;;
+    --tnb132m-write-ndef)
+      NFC_BOOT_PROBE=1; NFC_BOOT_PROBE_CLI=1
+      NFC_WRITE_NDEF=1; NFC_WRITE_NDEF_CLI=1
+      NFC_NDEF_TEXT="${2:?--tnb132m-write-ndef needs TEXT}"; NFC_NDEF_TEXT_CLI=1
+      shift
+      ;;
+    --no-tnb132m-write-ndef) NFC_WRITE_NDEF=0; NFC_WRITE_NDEF_CLI=1 ;;
     --no-bootloader) DO_FLASH_BOOTLOADER=0 ;;
     --no-ota-image) DO_OTA_IMAGE=0 ;;
     --bootloader-art) BOOTLOADER_ART="${2:?}"; shift ;;
@@ -107,6 +126,23 @@ done
 
 if [[ "$RTT_ONLY" -eq 1 ]] && [[ "$DO_RTT" -ne 1 ]]; then
   DO_RTT=1
+fi
+
+if [[ "$NFC_BOOT_PROBE_CLI" -eq 0 ]] && [[ -n "${OD_TNB132M_BOOT_PROBE:-}" ]]; then
+  case "${OD_TNB132M_BOOT_PROBE}" in
+    1|ON|on|Yes|yes|TRUE|true) NFC_BOOT_PROBE=1 ;;
+    0|OFF|off|No|no|FALSE|false) NFC_BOOT_PROBE=0 ;;
+  esac
+fi
+
+if [[ "$NFC_WRITE_NDEF_CLI" -eq 0 ]] && [[ -n "${OD_TNB132M_WRITE_NDEF:-}" ]]; then
+  case "${OD_TNB132M_WRITE_NDEF}" in
+    1|ON|on|Yes|yes|TRUE|true) NFC_WRITE_NDEF=1; NFC_BOOT_PROBE=1 ;;
+    0|OFF|off|No|no|FALSE|false) NFC_WRITE_NDEF=0 ;;
+  esac
+fi
+if [[ "$NFC_NDEF_TEXT_CLI" -eq 0 ]] && [[ -n "${OD_TNB132M_NDEF_TEXT:-}" ]]; then
+  NFC_NDEF_TEXT="${OD_TNB132M_NDEF_TEXT}"
 fi
 
 if [[ "$DO_GBL_ONLY" -eq 1 ]]; then
@@ -447,10 +483,26 @@ run_rtt_session() {
 }
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
-  echo "==> Configure + build (RTT enabled: $RTT_ENABLED)"
+  if [[ "$NFC_BOOT_PROBE" -eq 0 ]]; then
+    NFC_WRITE_NDEF=0
+  fi
+  echo "==> Configure + build (RTT enabled: $RTT_ENABLED, TNB132M boot probe: $NFC_BOOT_PROBE, write ndef: $NFC_WRITE_NDEF${NFC_NDEF_TEXT:+ text=\"$NFC_NDEF_TEXT\"})"
   echo "    Directory: $CMAKE_DIR"
   cfg=(--preset project)
   [[ "$RTT_ENABLED" -eq 0 ]] && cfg+=(-DOD_ENABLE_RTT=OFF)
+  if [[ "$NFC_BOOT_PROBE" -eq 1 ]]; then
+    cfg+=(-DOD_TNB132M_BOOT_PROBE=ON)
+  else
+    cfg+=(-DOD_TNB132M_BOOT_PROBE=OFF)
+  fi
+  if [[ "$NFC_WRITE_NDEF" -eq 1 ]]; then
+    cfg+=(-DOD_TNB132M_WRITE_NDEF=ON)
+  else
+    cfg+=(-DOD_TNB132M_WRITE_NDEF=OFF)
+  fi
+  if [[ -n "$NFC_NDEF_TEXT" ]]; then
+    cfg+=(-DOD_TNB132M_NDEF_TEXT="$NFC_NDEF_TEXT")
+  fi
   [[ -n "${OPENDISPLAY_BUILD_ID:-}" ]] && cfg+=(-DOPENDISPLAY_BUILD_ID="${OPENDISPLAY_BUILD_ID}")
   [[ -n "${OD_APP_VERSION:-}" ]] && cfg+=(-DOD_APP_VERSION="${OD_APP_VERSION}")
   [[ -n "${OD_SL_APPLICATION_VERSION:-}" ]] && cfg+=(-DOD_SL_APPLICATION_VERSION="${OD_SL_APPLICATION_VERSION}")
