@@ -22,8 +22,8 @@ GATT_DATA(const uint8_t gattdb_uuidtable_128_map[]) =
 };
 GATT_DATA(sli_bt_gattdb_attribute_chrvalue_t gattdb_attribute_field_2) = {
   .properties = 0x0a,
-  .max_len = 13,
-  .data = { 0x45, 0x6d, 0x70, 0x74, 0x79, 0x20, 0x45, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, },
+  .max_len = 16,
+  .data = { 0x4f, 0x44, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, },
 };
 GATT_DATA(const sli_bt_gattdb_value_t gattdb_attribute_field_0) = {
   .len = 2,
