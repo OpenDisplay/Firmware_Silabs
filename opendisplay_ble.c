@@ -22,7 +22,7 @@
 #define MSD_PAYLOAD_LEN        16u
 #define OD_NAME_PREFIX         "OD"
 #ifndef OD_APP_VERSION
-#define OD_APP_VERSION         0x0019u
+#define OD_APP_VERSION         0x0100u
 #endif
 
 #ifndef OPENDISPLAY_MAX_PIPE_LEN
@@ -74,7 +74,6 @@ static uint8_t reboot_flag = 1u;
 static uint8_t connection_requested = 0u;
 
 static uint16_t g_od_pipe_char;
-static uint16_t g_od_appver_char;
 static uint8_t g_connection;
 static uint8_t s_adv_handle = 0xFFu;
 static char s_dev_name[16];
@@ -1618,11 +1617,8 @@ static sl_status_t install_opendisplay_gatt(void)
   uint16_t session;
   uint16_t svc;
   uint16_t ch_pipe;
-  uint16_t ch_ver;
   sl_bt_uuid_16_t uuid_svc = { .data = { 0x46, 0x24 } };
   sl_bt_uuid_16_t uuid_pipe = { .data = { 0x46, 0x24 } };
-  sl_bt_uuid_16_t uuid_ver = { .data = { 0x03, 0x00 } };
-  uint8_t ver_init[2] = { (uint8_t)(OD_APP_VERSION & 0xFFu), (uint8_t)((OD_APP_VERSION >> 8) & 0xFFu) };
   uint8_t pipe_init = 0;
   sl_status_t sc;
 
@@ -1661,22 +1657,6 @@ static sl_status_t install_opendisplay_gatt(void)
     return sc;
   }
 
-  sc = sl_bt_gattdb_add_uuid16_characteristic(session,
-                                              svc,
-                                              SL_BT_GATTDB_CHARACTERISTIC_READ,
-                                              0,
-                                              0,
-                                              uuid_ver,
-                                              sl_bt_gattdb_fixed_length_value,
-                                              2,
-                                              sizeof(ver_init),
-                                              ver_init,
-                                              &ch_ver);
-  if (sc != SL_STATUS_OK) {
-    (void)sl_bt_gattdb_abort(session);
-    return sc;
-  }
-
   sc = sl_bt_gattdb_start_service(session, svc);
   if (sc != SL_STATUS_OK) {
     (void)sl_bt_gattdb_abort(session);
@@ -1689,8 +1669,6 @@ static sl_status_t install_opendisplay_gatt(void)
   }
 
   g_od_pipe_char = ch_pipe;
-  g_od_appver_char = ch_ver;
-  (void)g_od_appver_char;
   return SL_STATUS_OK;
 }
 
@@ -1792,8 +1770,7 @@ void opendisplay_ble_on_boot(uint8_t advertising_set_handle)
     }
   }
   app_assert_status(sc);
-  printf("[OD] GATT 0x2446 ok, pipe_char=%u appver=%u\r\n",
-         (unsigned)g_od_pipe_char, (unsigned)g_od_appver_char);
+  printf("[OD] GATT 0x2446 ok, pipe_char=%u\r\n", (unsigned)g_od_pipe_char);
   opendisplay_pipe_set_characteristic(g_od_pipe_char);
 
   od_buttons_init_from_config();
@@ -1872,6 +1849,7 @@ void opendisplay_ble_schedule_deep_sleep(void)
 
 void opendisplay_ble_process(void)
 {
+  opendisplay_led_process();
   uint32_t now_ms = sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count());
   if (od_process_button_event(now_ms) && s_adv_handle != 0xFFu) {
     build_and_apply_adv(s_adv_handle, s_dev_name);

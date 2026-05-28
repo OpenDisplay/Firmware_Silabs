@@ -407,7 +407,7 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
   (void)snprintf(name_line, sizeof(name_line), "OD%06lX", (unsigned long)last3);
   {
     uint16_t ver = opendisplay_ble_get_app_version();
-    (void)snprintf(fw_line, sizeof(fw_line), "FW: %u.%u",
+    (void)snprintf(fw_line, sizeof(fw_line), "FW:S %u.%u",
                    (unsigned)((ver >> 8) & 0xFFu), (unsigned)(ver & 0xFFu));
   }
   bytes_to_hex(key, sizeof(key), key_hex, sizeof(key_hex));

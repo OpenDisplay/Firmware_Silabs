@@ -16,7 +16,11 @@ struct ManufacturerData {
   uint16_t manufacturer_id;
   uint8_t board_type;
   uint8_t board_revision;
-  uint8_t reserved[18];
+  uint16_t simple_config_driver_index;
+  uint16_t simple_config_display_index;
+  uint16_t simple_config_power_index;
+  uint8_t simple_config_configured_at[6];
+  uint8_t reserved[6];
 } __attribute__((packed));
 
 struct PowerOption {

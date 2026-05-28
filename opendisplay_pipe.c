@@ -1061,6 +1061,23 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
       pipe_send(connection, ok, sizeof(ok));
       break;
     }
+    case CMD_LED_STOP: {
+      uint8_t ok[] = { 0x00u, RESP_LED_STOP_ACK, 0x00u, 0x00u };
+      uint8_t e2[] = { 0xFFu, RESP_LED_STOP_ACK, 0x02u, 0x00u };
+      int rc;
+
+      if (payload_len >= 1u) {
+        rc = opendisplay_led_stop(payload[0], true);
+      } else {
+        rc = opendisplay_led_stop(0, false);
+      }
+      if (rc != 0) {
+        pipe_send(connection, e2, sizeof(e2));
+        break;
+      }
+      pipe_send(connection, ok, sizeof(ok));
+      break;
+    }
     case CMD_NFC_ENDPOINT:
       handle_nfc_endpoint(connection, payload, payload_len);
       break;
