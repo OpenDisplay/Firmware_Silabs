@@ -34,4 +34,8 @@
 #define OD_NFC_REC_MIME             3u
 #define OD_NFC_REC_RAW_NDEF         4u
 
+#define TRANSMISSION_MODE_ZIPXL          (1u << 0)
+#define TRANSMISSION_MODE_ZIP            (1u << 1)
+#define TRANSMISSION_MODE_DIRECT_WRITE   (1u << 3)
+
 #endif

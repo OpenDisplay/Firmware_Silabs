@@ -4,6 +4,7 @@
 #include "opendisplay_led.h"
 #include "opendisplay_pipe.h"
 #include "opendisplay_constants.h"
+#include "app.h"
 #include "app_assert.h"
 #include "gatt_db.h"
 #include "em_cmu.h"
@@ -31,9 +32,10 @@
 
 /* BLE adv interval in units of 0.625 ms (used when not connected / undirected adv). */
 #define OD_ADV_INTERVAL_IDLE_SLOTS 1600u
+#define OD_ADV_INTERVAL_BOOST_MIN    32u
+#define OD_ADV_INTERVAL_BOOST_MAX    48u
+#define OD_ADV_BOOST_MS              3000u
 #define OD_MSD_UPDATE_INTERVAL_MS  30000u
-#define BUTTON_PRESS_TIMEOUT_MS    5000u
-#define BUTTON_MAX_PRESS_COUNT     15u
 #define BUTTON_ID_MASK             0x07u
 #define PRESS_COUNT_MASK           0x0Fu
 #define PRESS_COUNT_SHIFT          3u
@@ -74,11 +76,12 @@ static uint8_t reboot_flag = 1u;
 static uint8_t connection_requested = 0u;
 
 static uint16_t g_od_pipe_char;
-static uint8_t g_connection;
+static uint8_t g_connection = 0xFFu;
 static uint8_t s_adv_handle = 0xFFu;
 static char s_dev_name[16];
 static struct GlobalConfig s_od_global_config;
 static uint32_t s_last_msd_refresh_ms;
+static uint32_t s_adv_boost_until_ms;
 static bool s_pending_dfu;
 static bool s_pending_deep_sleep;
 static uint32_t s_connection_open_ms;
@@ -137,12 +140,14 @@ typedef struct {
   bool inverted;
   uint8_t press_count;
   uint8_t current_state;
-  uint32_t last_press_ms;
 } od_button_state_t;
 static od_button_state_t s_buttons[32];
 static uint8_t s_button_count;
-static volatile bool s_button_event_pending;
-static volatile uint8_t s_last_changed_button_index = 0xFFu;
+static volatile bool s_button_msd_dirty;
+
+static void build_and_apply_adv(uint8_t adv_set, const char *name, bool quick);
+static void od_boost_advertising(uint32_t now_ms);
+static void od_apply_advertising_timing(uint8_t adv_handle, uint32_t now_ms);
 
 #if defined(__GNUC__)
 extern uint32_t __ResetReasonStart__;
@@ -213,12 +218,29 @@ static void od_setup_button_pin(uint8_t pin_cfg, bool pullup, bool pulldown)
 static void od_button_irq_callback(uint8_t int_no, void *context)
 {
   od_button_state_t *st = (od_button_state_t *)context;
+  uint8_t pin_state;
+  uint8_t logical_state;
+  uint8_t encoded;
+
   (void)int_no;
   if (st == NULL || !st->active) {
     return;
   }
-  s_last_changed_button_index = (uint8_t)(st - s_buttons);
-  s_button_event_pending = true;
+  pin_state = od_read_button_pin(st->pin_cfg);
+  logical_state = (st->inverted ? (pin_state == 0u) : (pin_state != 0u)) ? 1u : 0u;
+  if (logical_state == st->current_state) {
+    return;
+  }
+  st->current_state = logical_state;
+  if (logical_state != 0u) {
+    st->press_count = (uint8_t)((st->press_count + 1u) & PRESS_COUNT_MASK);
+  }
+  encoded = (uint8_t)((st->button_id & BUTTON_ID_MASK)
+            | ((st->press_count & PRESS_COUNT_MASK) << PRESS_COUNT_SHIFT)
+            | ((st->current_state & 0x01u) << BUTTON_STATE_SHIFT));
+  dynamic_return[st->byte_index] = encoded;
+  s_button_msd_dirty = true;
+  app_proceed();
 }
 
 static void od_buttons_deinit_interrupts(void)
@@ -245,8 +267,7 @@ static void od_buttons_init_from_config(void)
 
   od_buttons_deinit_interrupts();
   s_button_count = 0u;
-  s_button_event_pending = false;
-  s_last_changed_button_index = 0xFFu;
+  s_button_msd_dirty = false;
   memset(s_buttons, 0, sizeof(s_buttons));
   printf("[OD][BTN] init: binary_input_count=%u\r\n", (unsigned)cfg->binary_input_count);
   for (i = 0; i < cfg->binary_input_count; i++) {
@@ -331,47 +352,17 @@ static void od_buttons_init_from_config(void)
   printf("[OD][BTN] init done active_buttons=%u\r\n", (unsigned)s_button_count);
 }
 
-static bool od_process_button_event(uint32_t now_ms)
+static void od_publish_button_msd(uint8_t adv_handle, uint32_t now_ms)
 {
-  uint8_t idx;
-  od_button_state_t *st;
-  uint8_t pin_state;
-  uint8_t logical_state;
-  uint8_t encoded;
-
-  if (!s_button_event_pending) {
-    return false;
+  if (!s_button_msd_dirty || adv_handle == 0xFFu || g_connection != 0xFFu) {
+    return;
   }
-  s_button_event_pending = false;
-  idx = s_last_changed_button_index;
-  s_last_changed_button_index = 0xFFu;
-  if (idx >= s_button_count) {
-    return false;
-  }
-  st = &s_buttons[idx];
-  if (!st->active) {
-    return false;
-  }
-  pin_state = od_read_button_pin(st->pin_cfg);
-  logical_state = (st->inverted ? (pin_state == 0u) : (pin_state != 0u)) ? 1u : 0u;
-  if (logical_state == st->current_state) {
-    return false;
-  }
-  st->current_state = logical_state;
-  if (logical_state != 0u) {
-    if (st->last_press_ms == 0u || (now_ms - st->last_press_ms) > BUTTON_PRESS_TIMEOUT_MS) {
-      st->press_count = 0u;
-    }
-    if (st->press_count < BUTTON_MAX_PRESS_COUNT) {
-      st->press_count++;
-    }
-    st->last_press_ms = now_ms;
-  }
-  encoded = (uint8_t)((st->button_id & BUTTON_ID_MASK)
-            | ((st->press_count & PRESS_COUNT_MASK) << PRESS_COUNT_SHIFT)
-            | ((st->current_state & 0x01u) << BUTTON_STATE_SHIFT));
-  dynamic_return[st->byte_index] = encoded;
-  return true;
+  s_button_msd_dirty = false;
+  od_boost_advertising(now_ms);
+  (void)sl_bt_advertiser_stop(adv_handle);
+  build_and_apply_adv(adv_handle, s_dev_name, true);
+  od_apply_advertising_timing(adv_handle, now_ms);
+  app_assert_status(sl_bt_legacy_advertiser_start(adv_handle, sl_bt_legacy_advertiser_connectable));
 }
 
 static void od_buttons_arm_em4_wakeup(void)
@@ -1513,18 +1504,54 @@ void opendisplay_ble_reload_config_from_nvm(void)
   opendisplay_display_boot_apply();
 }
 
-static void od_apply_idle_advertising_timing(uint8_t adv_handle)
+static void od_apply_advertising_timing(uint8_t adv_handle, uint32_t now_ms)
 {
   sl_status_t sc;
+  uint16_t min_slots;
+  uint16_t max_slots;
 
   if (adv_handle == 0xFFu) {
     return;
   }
-  sc = sl_bt_advertiser_set_timing(adv_handle, OD_ADV_INTERVAL_IDLE_SLOTS, OD_ADV_INTERVAL_IDLE_SLOTS, 0, 0);
+  if (s_adv_boost_until_ms != 0u && now_ms < s_adv_boost_until_ms) {
+    min_slots = OD_ADV_INTERVAL_BOOST_MIN;
+    max_slots = OD_ADV_INTERVAL_BOOST_MAX;
+  } else {
+    s_adv_boost_until_ms = 0u;
+    min_slots = OD_ADV_INTERVAL_IDLE_SLOTS;
+    max_slots = OD_ADV_INTERVAL_IDLE_SLOTS;
+  }
+  sc = sl_bt_advertiser_set_timing(adv_handle, min_slots, max_slots, 0, 0);
   if (sc != SL_STATUS_OK) {
     printf("[OD] advertiser_set_timing sc=0x%04lX\r\n", (unsigned long)sc);
   }
   app_assert_status(sc);
+}
+
+static void od_boost_advertising(uint32_t now_ms)
+{
+  s_adv_boost_until_ms = now_ms + OD_ADV_BOOST_MS;
+}
+
+static void od_advertising_boost_tick(uint8_t adv_handle, uint32_t now_ms)
+{
+  static bool was_boosted = false;
+  bool boosting = (s_adv_boost_until_ms != 0u && now_ms < s_adv_boost_until_ms);
+
+  if (boosting) {
+    was_boosted = true;
+    return;
+  }
+  if (!was_boosted) {
+    return;
+  }
+  was_boosted = false;
+  s_adv_boost_until_ms = 0u;
+  od_apply_advertising_timing(adv_handle, now_ms);
+  if (g_connection == 0xFFu) {
+    (void)sl_bt_advertiser_stop(adv_handle);
+    app_assert_status(sl_bt_legacy_advertiser_start(adv_handle, sl_bt_legacy_advertiser_connectable));
+  }
 }
 
 static void chip_id_hex6(char out[7])
@@ -1534,14 +1561,15 @@ static void chip_id_hex6(char out[7])
   snprintf(out, 7, "%06lX", (unsigned long)id);
 }
 
-static void update_msd_payload(void)
+static void update_msd_payload(bool quick)
 {
   float chip_temperature = EMU_TemperatureGet();
   int16_t temp_encoded;
   uint16_t battery_voltage_10mv = 0u;
   uint32_t now_ms = sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count());
-  bool measure_batt = (s_batt_voltage_mv_cache == 0u)
-                      || ((now_ms - s_last_batt_measure_ms) > OD_MSD_UPDATE_INTERVAL_MS);
+  bool measure_batt = !quick
+                      && ((s_batt_voltage_mv_cache == 0u)
+                          || ((now_ms - s_last_batt_measure_ms) > OD_MSD_UPDATE_INTERVAL_MS));
   uint8_t temperature_byte;
   uint8_t battery_voltage_low_byte;
   uint8_t status_byte;
@@ -1672,7 +1700,7 @@ static sl_status_t install_opendisplay_gatt(void)
   return SL_STATUS_OK;
 }
 
-static void build_and_apply_adv(uint8_t adv_set, const char *name)
+static void build_and_apply_adv(uint8_t adv_set, const char *name, bool quick)
 {
   uint8_t adv[31];
   uint8_t sr[31];
@@ -1681,7 +1709,7 @@ static void build_and_apply_adv(uint8_t adv_set, const char *name)
   size_t nl = strlen(name);
   sl_status_t sc;
 
-  update_msd_payload();
+  update_msd_payload(quick);
 
   adv[ai++] = 2u;
   adv[ai++] = 0x01u;
@@ -1778,10 +1806,11 @@ void opendisplay_ble_on_boot(uint8_t advertising_set_handle)
   opendisplay_led_init();
   opendisplay_display_boot_apply();
 
-  build_and_apply_adv(advertising_set_handle, s_dev_name);
+  build_and_apply_adv(advertising_set_handle, s_dev_name, false);
   printf("[OD] advertising + scan rsp set\r\n");
 
-  od_apply_idle_advertising_timing(advertising_set_handle);
+  od_apply_advertising_timing(advertising_set_handle,
+                              sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count()));
 
   sc = sl_bt_legacy_advertiser_start(advertising_set_handle, sl_bt_legacy_advertiser_connectable);
   if (sc != SL_STATUS_OK) {
@@ -1793,8 +1822,9 @@ void opendisplay_ble_on_boot(uint8_t advertising_set_handle)
 
 void opendisplay_ble_restart_advertising(uint8_t advertising_set_handle)
 {
-  build_and_apply_adv(advertising_set_handle, s_dev_name);
-  od_apply_idle_advertising_timing(advertising_set_handle);
+  build_and_apply_adv(advertising_set_handle, s_dev_name, false);
+  od_apply_advertising_timing(advertising_set_handle,
+                              sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count()));
   app_assert_status(sl_bt_legacy_advertiser_start(advertising_set_handle,
                                                   sl_bt_legacy_advertiser_connectable));
 }
@@ -1851,16 +1881,17 @@ void opendisplay_ble_process(void)
 {
   opendisplay_led_process();
   uint32_t now_ms = sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count());
-  if (od_process_button_event(now_ms) && s_adv_handle != 0xFFu) {
-    build_and_apply_adv(s_adv_handle, s_dev_name);
+  od_publish_button_msd(s_adv_handle, now_ms);
+  if (s_adv_handle != 0xFFu) {
+    od_advertising_boost_tick(s_adv_handle, now_ms);
   }
   if (od_nfc_field_detect_process(now_ms) && s_adv_handle != 0xFFu) {
-    build_and_apply_adv(s_adv_handle, s_dev_name);
+    build_and_apply_adv(s_adv_handle, s_dev_name, false);
   }
   if ((now_ms - s_last_msd_refresh_ms) >= OD_MSD_UPDATE_INTERVAL_MS) {
     s_last_msd_refresh_ms = now_ms;
     if (s_adv_handle != 0xFFu) {
-      build_and_apply_adv(s_adv_handle, s_dev_name);
+      build_and_apply_adv(s_adv_handle, s_dev_name, false);
     }
   }
   if (g_connection != 0xFFu

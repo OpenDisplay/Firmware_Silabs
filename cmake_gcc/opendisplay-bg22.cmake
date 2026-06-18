@@ -189,6 +189,7 @@ add_library(slc OBJECT
     "../main.c"
     "../third_party/bb_epaper/src/bb_epaper.cpp"
     "../third_party/bb_epaper/src/Group5.cpp"
+    "../third_party/uzlib/src/od_zlib_stream.c"
 )
 
 target_include_directories(slc PUBLIC
@@ -198,6 +199,7 @@ target_include_directories(slc PUBLIC
    "../."
    "../third_party/segger_rtt"
    "../third_party/bb_epaper/src"
+   "../third_party/uzlib/src"
     "../${COPIED_SDK_PATH}/devices/platform/Device/SiliconLabs/EFR32BG22/Include"
     "../${COPIED_SDK_PATH}/platform_common_apps/app/common/util/app_assert"
     "../${COPIED_SDK_PATH}/platform_common/platform/common/inc"
@@ -262,6 +264,8 @@ target_include_directories(slc PUBLIC
 )
 
 target_compile_definitions(slc PUBLIC
+    "OPENDISPLAY_ZLIB_WINDOW_BITS=9"
+    "OPENDISPLAY_ZLIB_USE_HEAP_WINDOW=0"
     "__SILABS_BG22__=1"
     "EFR32BG22C222F352GM40=1"
     "SL_CODE_COMPONENT_SYSTEM=system"
