@@ -2,6 +2,7 @@
 #include "opendisplay_display_color.h"
 #include "opendisplay_ble.h"
 #include "opendisplay_config_parser.h"
+#include "opendisplay_constants.h"
 #include "opendisplay_epd_map.h"
 #include "opendisplay_structs.h"
 #include "bb_epaper.h"
@@ -12,6 +13,12 @@
 #include "sl_sleeptimer.h"
 #include <stdio.h>
 #include <string.h>
+
+extern "C" {
+#include "uzlib.h"
+}
+
+#define OPENDISPLAY_DECOMPRESSION_CHUNK_SIZE 256u
 
 static BBEPAPER s_epd;
 static bool s_active;
@@ -25,6 +32,9 @@ static uint8_t s_color_scheme;
 static uint32_t s_plane_size;
 static bool s_plane2_started;
 static bool s_boot_applied;
+static bool s_dw_compressed;
+static uint32_t s_dw_decompressed_total;
+static uint8_t s_decompression_chunk[OPENDISPLAY_DECOMPRESSION_CHUNK_SIZE];
 
 #ifndef OD_FALLBACK_DISPLAY_PWR_PIN
 #define OD_FALLBACK_DISPLAY_PWR_PIN 0x00u
@@ -576,6 +586,99 @@ extern "C" void opendisplay_display_abort(void)
   s_dw_trailing_ignores = 0;
   s_plane_size = 0;
   s_plane2_started = false;
+  s_dw_compressed = false;
+  s_dw_decompressed_total = 0;
+}
+
+static void dw_log_progress(void)
+{
+  if (s_total_bytes == 0u) {
+    return;
+  }
+  uint8_t pct = (uint8_t)((100u * s_written_bytes) / s_total_bytes);
+  if (pct >= s_dw_log_pct + 25u) {
+    printf("[OD] dw data #%lu %lu/%lu B (%u%%)%s\r\n", (unsigned long)s_dw_chunk_n,
+           (unsigned long)s_written_bytes, (unsigned long)s_total_bytes, (unsigned)pct,
+           s_dw_compressed ? " zlib" : "");
+    s_dw_log_pct = (pct / 25u) * 25u;
+  }
+}
+
+static int dw_stream_raw_bytes(const uint8_t *payload, uint32_t payload_len)
+{
+  uint32_t remaining = (s_written_bytes < s_total_bytes) ? (s_total_bytes - s_written_bytes) : 0u;
+  const bool bitplanes = opendisplay_color_is_bitplanes(s_color_scheme);
+  const uint8_t *p = payload;
+  uint32_t left = payload_len;
+  const uint32_t written_before = s_written_bytes;
+
+  while (left > 0u && remaining > 0u) {
+    uint32_t rem = remaining;
+    uint32_t chunk = left;
+    if (bitplanes && !s_plane2_started && s_plane_size > 0u) {
+      uint32_t to_plane_end = s_plane_size - s_written_bytes;
+      if (chunk > to_plane_end) {
+        chunk = to_plane_end;
+      }
+    }
+    if (chunk > rem) {
+      chunk = rem;
+    }
+    if (chunk == 0u) {
+      break;
+    }
+    s_epd.writeData((uint8_t *)(void *)p, (int)chunk);
+    p += chunk;
+    left -= chunk;
+    s_written_bytes += chunk;
+    remaining -= chunk;
+    if (bitplanes && !s_plane2_started && s_plane_size > 0u && s_written_bytes >= s_plane_size) {
+      s_epd.startWrite(PLANE_1);
+      s_plane2_started = true;
+    }
+  }
+
+  if (s_written_bytes > written_before) {
+    dw_log_progress();
+  }
+  return 0;
+}
+
+static bool zlib_stream_to_direct_write(const uint8_t *data, uint32_t len, bool final)
+{
+  od_zlib_status_t status = od_zlib_stream_push(data, len, final);
+  if (status == OD_ZLIB_STATUS_ERROR) {
+    printf("[OD] zlib push error: %s\r\n", od_zlib_stream_error());
+    return false;
+  }
+
+  for (;;) {
+    size_t bytes_out = 0;
+    status = od_zlib_stream_poll(s_decompression_chunk, OPENDISPLAY_DECOMPRESSION_CHUNK_SIZE, &bytes_out);
+    if (bytes_out > 0u) {
+      uint32_t before = s_written_bytes;
+      if (dw_stream_raw_bytes(s_decompression_chunk, (uint32_t)bytes_out) != 0) {
+        return false;
+      }
+      if (s_written_bytes - before != (uint32_t)bytes_out) {
+        return false;
+      }
+      if (s_written_bytes > s_dw_decompressed_total) {
+        return false;
+      }
+    }
+    if (status == OD_ZLIB_STATUS_OUTPUT_READY) {
+      continue;
+    }
+    if (status == OD_ZLIB_STATUS_NEEDS_INPUT) {
+      return !final;
+    }
+    if (status == OD_ZLIB_STATUS_DONE) {
+      return s_written_bytes == s_dw_decompressed_total;
+    }
+    printf("[OD] zlib poll error: %s\r\n", od_zlib_stream_error());
+    return false;
+  }
 }
 
 extern "C" void opendisplay_display_boot_apply(void)
@@ -610,12 +713,8 @@ extern "C" void opendisplay_display_boot_apply(void)
 
 extern "C" int opendisplay_display_direct_write_start(const uint8_t *payload, uint16_t payload_len)
 {
-  (void)payload;
   s_dw_init_t0 = sl_sleeptimer_get_tick_count();
   printf("[OD] dw init begin\r\n");
-  if (payload_len != 0u) {
-    printf("[OD] dw start note non-empty payload len=%u (ignored)\r\n", (unsigned)payload_len);
-  }
 
   const struct DisplayConfig *d = display_cfg();
   if (d == nullptr) {
@@ -669,11 +768,43 @@ extern "C" int opendisplay_display_direct_write_start(const uint8_t *payload, ui
   s_dw_chunk_n = 0;
   s_dw_log_pct = 0;
   s_dw_trailing_ignores = 0;
+  s_dw_compressed = (payload != nullptr && payload_len >= 4u);
+  s_dw_decompressed_total = 0;
   s_active = true;
-  printf("[OD] dw start total=%lu B bpp=%d cs=%u panel=%u %ux%u bitplanes=%d\r\n",
+
+  if (s_dw_compressed) {
+    if ((d->transmission_modes & TRANSMISSION_MODE_ZIP) == 0u) {
+      printf("[OD] dw start err ZIP not enabled in transmission_modes\r\n");
+      opendisplay_display_abort();
+      return -4;
+    }
+    s_dw_decompressed_total =
+      (uint32_t)payload[0]
+      | ((uint32_t)payload[1] << 8)
+      | ((uint32_t)payload[2] << 16)
+      | ((uint32_t)payload[3] << 24);
+    if (s_dw_decompressed_total != s_total_bytes) {
+      printf("[OD] dw start err zlib size %lu != %lu\r\n",
+             (unsigned long)s_dw_decompressed_total, (unsigned long)s_total_bytes);
+      opendisplay_display_abort();
+      return -5;
+    }
+    od_zlib_stream_reset(s_dw_decompressed_total);
+    if (payload_len > 4u) {
+      if (!zlib_stream_to_direct_write(payload + 4, (uint32_t)payload_len - 4u, false)) {
+        opendisplay_display_abort();
+        return -6;
+      }
+    }
+  } else if (payload_len != 0u) {
+    printf("[OD] dw start note non-empty payload len=%u (ignored)\r\n", (unsigned)payload_len);
+  }
+
+  printf("[OD] dw start total=%lu B bpp=%d cs=%u panel=%u %ux%u bitplanes=%d%s\r\n",
          (unsigned long)s_total_bytes, opendisplay_color_bits_per_pixel(s_color_scheme),
          (unsigned)s_color_scheme, (unsigned)d->panel_ic_type, (unsigned)d->pixel_width,
-         (unsigned)d->pixel_height, (int)opendisplay_color_is_bitplanes(s_color_scheme));
+         (unsigned)d->pixel_height, (int)opendisplay_color_is_bitplanes(s_color_scheme),
+         s_dw_compressed ? " zlib" : "");
   return 0;
 }
 
@@ -682,6 +813,17 @@ extern "C" int opendisplay_display_direct_write_data(const uint8_t *payload, uin
   if (!s_active || payload == nullptr || payload_len == 0u) {
     printf("[OD] dw data bad arg active=%d len=%u\r\n", (int)s_active, (unsigned)payload_len);
     return -1;
+  }
+
+  if (s_dw_compressed) {
+    const uint32_t written_before = s_written_bytes;
+    if (!zlib_stream_to_direct_write(payload, payload_len, false)) {
+      return -3;
+    }
+    if (s_written_bytes > written_before) {
+      s_dw_chunk_n++;
+    }
+    return 0;
   }
 
   uint32_t remaining = (s_written_bytes < s_total_bytes) ? (s_total_bytes - s_written_bytes) : 0u;
@@ -697,47 +839,12 @@ extern "C" int opendisplay_display_direct_write_data(const uint8_t *payload, uin
     return 0;
   }
 
-  const bool bitplanes = opendisplay_color_is_bitplanes(s_color_scheme);
-  const uint8_t *p = payload;
-  uint16_t left = payload_len;
   const uint32_t written_before = s_written_bytes;
-
-  while (left > 0u && remaining > 0u) {
-    uint32_t rem = (uint32_t)remaining;
-    uint16_t chunk = left;
-    if (bitplanes && !s_plane2_started && s_plane_size > 0u) {
-      uint32_t to_plane_end = s_plane_size - s_written_bytes;
-      if (chunk > to_plane_end) {
-        chunk = (uint16_t)to_plane_end;
-      }
-    }
-    if ((uint32_t)chunk > rem) {
-      chunk = (uint16_t)rem;
-    }
-    if (chunk == 0u) {
-      break;
-    }
-    s_epd.writeData((uint8_t *)(void *)p, (int)chunk);
-    p += chunk;
-    left -= chunk;
-    s_written_bytes += chunk;
-    remaining -= (uint32_t)chunk;
-    if (bitplanes && !s_plane2_started && s_plane_size > 0u && s_written_bytes >= s_plane_size) {
-      s_epd.startWrite(PLANE_1);
-      s_plane2_started = true;
-    }
+  if (dw_stream_raw_bytes(payload, payload_len) != 0) {
+    return -2;
   }
-
   if (s_written_bytes > written_before) {
     s_dw_chunk_n++;
-    if (s_total_bytes > 0u) {
-      uint8_t pct = (uint8_t)((100u * s_written_bytes) / s_total_bytes);
-      if (pct >= s_dw_log_pct + 25u) {
-        printf("[OD] dw data #%lu %lu/%lu B (%u%%)\r\n", (unsigned long)s_dw_chunk_n,
-               (unsigned long)s_written_bytes, (unsigned long)s_total_bytes, (unsigned)pct);
-        s_dw_log_pct = (pct / 25u) * 25u;
-      }
-    }
   }
   return 0;
 }
@@ -747,6 +854,12 @@ extern "C" int opendisplay_display_direct_write_end(const uint8_t *payload, uint
   if (!s_active) {
     printf("[OD] dw end err inactive\r\n");
     return -1;
+  }
+  if (s_dw_compressed) {
+    if (!zlib_stream_to_direct_write(nullptr, 0, true)) {
+      printf("[OD] dw end err zlib finalize\r\n");
+      return -3;
+    }
   }
   if (s_written_bytes < s_total_bytes) {
     printf("[OD] dw end err incomplete wr=%lu need=%lu\r\n", (unsigned long)s_written_bytes,
@@ -768,6 +881,8 @@ extern "C" int opendisplay_display_direct_write_end(const uint8_t *payload, uint
   printf("[OD] dw refresh done ok=%d busy=%d\r\n", (int)ok, (int)s_epd.isBusy());
   s_epd.sleep(DEEP_SLEEP);
   s_active = false;
+  s_dw_compressed = false;
+  s_dw_decompressed_total = 0;
   display_power_set(false);
 
   if (refresh_ok != nullptr) {
