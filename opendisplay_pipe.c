@@ -355,6 +355,45 @@ static bool od_ccm_decrypt(const uint8_t *nonce,
   return (diff == 0u);
 }
 
+static bool verify_nonce_replay(const uint8_t *nonce)
+{
+  uint64_t nonce_counter = 0u;
+  int64_t diff;
+  int i;
+
+  if (!s_session.authenticated) {
+    return false;
+  }
+  if (memcmp(nonce, s_session.session_id, 8u) != 0) {
+    return false;
+  }
+  for (i = 0; i < 8; i++) {
+    nonce_counter = (nonce_counter << 8) | nonce[8 + i];
+  }
+
+  diff = (int64_t)nonce_counter - (int64_t)s_session.last_seen_counter;
+  if (diff < -32 || diff > 32) {
+    return false;
+  }
+
+  if (nonce_counter <= s_session.last_seen_counter && diff != 0) {
+    for (i = 0; i < 64; i++) {
+      if (s_session.replay_window[i] == nonce_counter) {
+        return false;
+      }
+    }
+  }
+
+  if (nonce_counter > s_session.last_seen_counter) {
+    s_session.last_seen_counter = nonce_counter;
+  }
+
+  s_session.replay_window[s_session.replay_idx] = nonce_counter;
+  s_session.replay_idx = (uint8_t)((s_session.replay_idx + 1u) % 64u);
+
+  return true;
+}
+
 static bool decrypt_encrypted_payload(uint16_t cmd,
                                       const uint8_t *payload,
                                       uint16_t payload_len,
@@ -372,6 +411,13 @@ static bool decrypt_encrypted_payload(uint16_t cmd,
     return false;
   }
   nonce      = payload;
+  if (!verify_nonce_replay(nonce)) {
+    s_session.integrity_failures++;
+    if (s_session.integrity_failures >= 3u) {
+      clear_session();
+    }
+    return false;
+  }
   tag        = &payload[payload_len - 12u];
   cipher     = &payload[16u];
   cipher_len = (uint16_t)(payload_len - 16u - 12u);
@@ -389,6 +435,7 @@ static bool decrypt_encrypted_payload(uint16_t cmd,
   if (*out_plain_len > 0u) {
     memmove(out_plain, &out_plain[1], *out_plain_len);
   }
+  s_session.integrity_failures = 0u;
   s_session.last_activity_ms = od_now_ms();
   return true;
 }
