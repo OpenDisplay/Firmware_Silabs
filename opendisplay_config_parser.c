@@ -366,6 +366,42 @@ bool parseConfigBytes(uint8_t* configData, uint32_t configLen, struct GlobalConf
                 }
                 break;
 
+            case CONFIG_PKT_TOUCH: // touch_controller (0x28) - handled by main MCU, skip on Silabs
+                if (offset > configLen) {
+                    printf("Offset overflow before touch\r\n");
+                    globalConfig->loaded = false;
+                    return false;
+                }
+                if (offset + CONFIG_PKT_TOUCH_SIZE <= configLen - 2) {
+                    offset += CONFIG_PKT_TOUCH_SIZE;
+                    if (offset > configLen) {
+                        printf("Offset overflow after touch\r\n");
+                        globalConfig->loaded = false;
+                        return false;
+                    }
+                } else {
+                    offset = configLen - 2; // Skip to CRC
+                }
+                break;
+
+            case CONFIG_PKT_BUZZER: // passive_buzzer (0x29) - handled by main MCU, skip on Silabs
+                if (offset > configLen) {
+                    printf("Offset overflow before buzzer\r\n");
+                    globalConfig->loaded = false;
+                    return false;
+                }
+                if (offset + CONFIG_PKT_BUZZER_SIZE <= configLen - 2) {
+                    offset += CONFIG_PKT_BUZZER_SIZE;
+                    if (offset > configLen) {
+                        printf("Offset overflow after buzzer\r\n");
+                        globalConfig->loaded = false;
+                        return false;
+                    }
+                } else {
+                    offset = configLen - 2; // Skip to CRC
+                }
+                break;
+
             case CONFIG_PKT_NFC: // nfc_config (0x2A)
                 if (offset > configLen) {
                     printf("Offset overflow before nfc_config\r\n");
@@ -423,7 +459,25 @@ bool parseConfigBytes(uint8_t* configData, uint32_t configLen, struct GlobalConf
                     return false;
                 }
                 break;
-                
+
+            case CONFIG_PKT_DATA_EXTENDED: // data_extended (0x2C) - host-only strings, skip on Silabs
+                if (offset > configLen) {
+                    printf("Offset overflow before data_extended\r\n");
+                    globalConfig->loaded = false;
+                    return false;
+                }
+                if (offset + CONFIG_PKT_DATA_EXTENDED_SIZE <= configLen - 2) {
+                    offset += CONFIG_PKT_DATA_EXTENDED_SIZE;
+                    if (offset > configLen) {
+                        printf("Offset overflow after data_extended\r\n");
+                        globalConfig->loaded = false;
+                        return false;
+                    }
+                } else {
+                    offset = configLen - 2; // Skip to CRC
+                }
+                break;
+
             default:
                 printf("Unknown pkt 0x%02X @%u\r\n", packetId, (unsigned)(offset - 2));
                 offset = configLen - 2; // Skip to CRC
