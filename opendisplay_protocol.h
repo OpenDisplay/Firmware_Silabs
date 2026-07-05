@@ -13,6 +13,9 @@
 #define CMD_DIRECT_WRITE_END    0x0072u
 #define CMD_LED_ACTIVATE        0x0073u
 #define CMD_LED_STOP            0x0075u
+/* Client-visible but unimplemented on Silabs; dispatch NACKs them (see dispatch()) */
+#define CMD_DIRECT_WRITE_PARTIAL_START 0x0076u
+#define CMD_BUZZER_ACTIVATE            0x0077u
 /* NFC: sub byte0 0=read, 1=write (+rec_type,len16,payload), 0x10/0x11/0x12=chunked write; rec_type OD_NFC_REC_* */
 #define CMD_NFC_ENDPOINT        0x0082u
 #define CMD_REBOOT              0x000Fu
