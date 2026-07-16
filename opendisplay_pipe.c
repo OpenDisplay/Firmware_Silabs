@@ -355,6 +355,56 @@ static bool od_ccm_decrypt(const uint8_t *nonce,
   return (diff == 0u);
 }
 
+/* Reject a replayed or out-of-window nonce. Does NOT mutate the replay
+ * window: a frame is only recorded once its CCM tag has been verified
+ * (see nonce_replay_advance), so a forged frame with a bogus tag cannot
+ * desync the window and lock out subsequent legitimate lower-counter
+ * frames. On success the parsed counter is returned via out_counter. */
+static bool nonce_replay_check(const uint8_t *nonce, uint64_t *out_counter)
+{
+  uint64_t nonce_counter = 0u;
+  int64_t diff;
+  int i;
+
+  if (!s_session.authenticated) {
+    return false;
+  }
+  if (memcmp(nonce, s_session.session_id, 8u) != 0) {
+    return false;
+  }
+  for (i = 0; i < 8; i++) {
+    nonce_counter = (nonce_counter << 8) | nonce[8 + i];
+  }
+
+  diff = (int64_t)nonce_counter - (int64_t)s_session.last_seen_counter;
+  if (diff < -32 || diff > 32) {
+    return false;
+  }
+
+  if (nonce_counter <= s_session.last_seen_counter && diff != 0) {
+    for (i = 0; i < 64; i++) {
+      if (s_session.replay_window[i] == nonce_counter) {
+        return false;
+      }
+    }
+  }
+
+  *out_counter = nonce_counter;
+  return true;
+}
+
+/* Advance the replay window. Only called after the CCM tag has verified,
+ * so the counter belongs to an authenticated frame. */
+static void nonce_replay_advance(uint64_t nonce_counter)
+{
+  if (nonce_counter > s_session.last_seen_counter) {
+    s_session.last_seen_counter = nonce_counter;
+  }
+
+  s_session.replay_window[s_session.replay_idx] = nonce_counter;
+  s_session.replay_idx = (uint8_t)((s_session.replay_idx + 1u) % 64u);
+}
+
 static bool decrypt_encrypted_payload(uint16_t cmd,
                                       const uint8_t *payload,
                                       uint16_t payload_len,
@@ -367,11 +417,22 @@ static bool decrypt_encrypted_payload(uint16_t cmd,
   uint8_t nonce_ccm[13];
   uint8_t ad[2];
   uint16_t cipher_len;
+  uint64_t nonce_counter;
 
   if (payload_len < (16u + 12u + 1u) || !session_alive()) {
     return false;
   }
   nonce      = payload;
+  /* Reject replays early, but do not advance the window yet: the counter is
+   * taken from the cleartext nonce and must not be trusted until the CCM tag
+   * has authenticated the frame (see nonce_replay_advance below). */
+  if (!nonce_replay_check(nonce, &nonce_counter)) {
+    s_session.integrity_failures++;
+    if (s_session.integrity_failures >= 3u) {
+      clear_session();
+    }
+    return false;
+  }
   tag        = &payload[payload_len - 12u];
   cipher     = &payload[16u];
   cipher_len = (uint16_t)(payload_len - 16u - 12u);
@@ -382,6 +443,10 @@ static bool decrypt_encrypted_payload(uint16_t cmd,
   if (!od_ccm_decrypt(nonce_ccm, ad, cipher, cipher_len, tag, out_plain)) {
     return false;
   }
+  /* Tag verified: the frame is authentic, so it is now safe to advance the
+   * replay window. A forged frame (bad tag) never reaches this point and
+   * therefore cannot desync the window. */
+  nonce_replay_advance(nonce_counter);
   if (out_plain[0] > (cipher_len - 1u)) {
     return false;
   }
@@ -389,6 +454,7 @@ static bool decrypt_encrypted_payload(uint16_t cmd,
   if (*out_plain_len > 0u) {
     memmove(out_plain, &out_plain[1], *out_plain_len);
   }
+  s_session.integrity_failures = 0u;
   s_session.last_activity_ms = od_now_ms();
   return true;
 }
