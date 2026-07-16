@@ -1156,6 +1156,17 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
     case CMD_DIRECT_WRITE_END:
       handle_direct_write_end(connection, payload, payload_len);
       break;
+    case CMD_DIRECT_WRITE_PARTIAL_START:
+    case CMD_BUZZER_ACTIVATE: {
+      /* Not implemented on Silabs, but the client sends these and blocks
+       * waiting for a reply. Emit a NACK so it fails fast instead of timing
+       * out: {0xFF, cmd_low, err, 0x00} matches the client's parse_nack()
+       * (0x76 falls back to a full upload; 0x77 raises promptly). Error code
+       * 0x07 = "unsupported" (ERR_PARTIAL_UNSUPPORTED on the client). */
+      uint8_t nack[] = { 0xFFu, (uint8_t)(cmd & 0xFFu), 0x07u, 0x00u };
+      pipe_send(connection, nack, sizeof(nack));
+      break;
+    }
     default:
       printf("[OD] unknown cmd 0x%04X\r\n", (unsigned)cmd);
       break;
