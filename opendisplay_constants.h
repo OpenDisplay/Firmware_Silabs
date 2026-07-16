@@ -11,8 +11,18 @@
 #define CONFIG_PKT_BINARY_INPUT   0x25
 #define CONFIG_PKT_WIFI           0x26
 #define CONFIG_PKT_SECURITY       0x27
+#define CONFIG_PKT_TOUCH          0x28
+#define CONFIG_PKT_BUZZER         0x29
 #define CONFIG_PKT_NFC            0x2A
 #define CONFIG_PKT_FLASH          0x2B
+#define CONFIG_PKT_DATA_EXTENDED  0x2C
+
+/* Wire sizes of config packets Silabs does not consume itself (touch/buzzer are
+ * handled by the main MCU, data_extended is host-only). They must still be
+ * skipped by their exact size so later packets (NFC 0x2A, flash 0x2B) parse. */
+#define CONFIG_PKT_TOUCH_SIZE          32
+#define CONFIG_PKT_BUZZER_SIZE         32
+#define CONFIG_PKT_DATA_EXTENDED_SIZE  288
 
 #define CONFIG_CHUNK_SIZE               200
 #define CONFIG_CHUNK_SIZE_WITH_PREFIX   202
