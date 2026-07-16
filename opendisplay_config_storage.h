@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define MAX_CONFIG_SIZE 512
+#define MAX_CONFIG_SIZE 2048
 
 typedef struct {
   uint32_t magic;
@@ -21,5 +21,8 @@ bool saveConfig(uint8_t *config_data, uint32_t len);
 bool loadConfig(uint8_t *config_data, uint32_t *len);
 
 uint32_t calculateConfigCRC(uint8_t *data, uint32_t len);
+
+/* Shared MAX_CONFIG_SIZE work buffer (pipe chunk / config read / parse). */
+uint8_t *opendisplay_config_buf(void);
 
 #endif

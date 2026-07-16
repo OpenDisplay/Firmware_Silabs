@@ -24,7 +24,6 @@ typedef struct {
   uint16_t expected_chunks;
   uint16_t received_chunks;
   uint32_t received_size;
-  uint8_t buffer[MAX_CONFIG_SIZE];
   uint8_t connection;
 } od_chunked_config_t;
 
@@ -724,7 +723,7 @@ static void handle_direct_write_end(uint8_t connection, const uint8_t *payload, 
 
 static void handle_config_read(uint8_t connection)
 {
-  static uint8_t config_data[MAX_CONFIG_SIZE];
+  uint8_t *config_data = opendisplay_config_buf();
   uint32_t config_len = MAX_CONFIG_SIZE;
   /* Chunk 0 carries a 4-byte header plus a 2-byte length prefix; later chunks
    * carry only the 4-byte header. Sizing the cap against the smallest per-chunk
@@ -819,7 +818,7 @@ static void handle_config_write(uint8_t connection, const uint8_t *data, uint16_
         if ((uint32_t)chunk_data_size > s_cfg_chunk.total_size) {
           chunk_data_size = (uint16_t)s_cfg_chunk.total_size;
         }
-        memcpy(s_cfg_chunk.buffer, data + 2, chunk_data_size);
+        memcpy(opendisplay_config_buf(), data + 2, chunk_data_size);
         s_cfg_chunk.received_size = chunk_data_size;
       }
     } else {
@@ -831,13 +830,13 @@ static void handle_config_write(uint8_t connection, const uint8_t *data, uint16_
       }
       {
         uint16_t chunk_size = (len < CONFIG_CHUNK_SIZE) ? len : CONFIG_CHUNK_SIZE;
-        memcpy(s_cfg_chunk.buffer, data, chunk_size);
+        memcpy(opendisplay_config_buf(), data, chunk_size);
         s_cfg_chunk.received_size = chunk_size;
       }
     }
 
     if (s_cfg_chunk.received_size >= s_cfg_chunk.total_size) {
-      if (saveConfig(s_cfg_chunk.buffer, s_cfg_chunk.received_size)) {
+      if (saveConfig(opendisplay_config_buf(), s_cfg_chunk.received_size)) {
         opendisplay_ble_reload_config_from_nvm();
         pipe_send(connection, ack, sizeof(ack));
       } else {
@@ -893,12 +892,12 @@ static void handle_config_chunk(uint8_t connection, const uint8_t *data, uint16_
     return;
   }
 
-  memcpy(s_cfg_chunk.buffer + s_cfg_chunk.received_size, data, len);
+  memcpy(opendisplay_config_buf() + s_cfg_chunk.received_size, data, len);
   s_cfg_chunk.received_size += len;
   s_cfg_chunk.received_chunks++;
 
   if (s_cfg_chunk.received_chunks >= s_cfg_chunk.expected_chunks) {
-    if (saveConfig(s_cfg_chunk.buffer, s_cfg_chunk.received_size)) {
+    if (saveConfig(opendisplay_config_buf(), s_cfg_chunk.received_size)) {
       opendisplay_ble_reload_config_from_nvm();
       pipe_send(connection, ack, sizeof(ack));
     } else {

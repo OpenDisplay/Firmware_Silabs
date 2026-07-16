@@ -512,7 +512,7 @@ bool loadGlobalConfig(struct GlobalConfig* globalConfig) {
     memset(globalConfig, 0, sizeof(struct GlobalConfig));
     globalConfig->loaded = false;
     
-    static uint8_t configData[MAX_CONFIG_SIZE];
+    uint8_t *configData = opendisplay_config_buf();
     uint32_t configLen = MAX_CONFIG_SIZE;
     
     if (!initConfigStorage()) {
