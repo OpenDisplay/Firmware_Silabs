@@ -726,7 +726,13 @@ static void handle_config_read(uint8_t connection)
 {
   static uint8_t config_data[MAX_CONFIG_SIZE];
   uint32_t config_len = MAX_CONFIG_SIZE;
-  const uint16_t max_chunks = 10u;
+  /* Chunk 0 carries a 4-byte header plus a 2-byte length prefix; later chunks
+   * carry only the 4-byte header. Sizing the cap against the smallest per-chunk
+   * payload (MAX_RESPONSE_DATA_SIZE - 6) guarantees enough chunks to read a
+   * full MAX_CONFIG_SIZE config, and scales automatically with MAX_CONFIG_SIZE. */
+  const uint16_t max_chunks =
+      (uint16_t)((MAX_CONFIG_SIZE + (MAX_RESPONSE_DATA_SIZE - 6u) - 1u) /
+                 (MAX_RESPONSE_DATA_SIZE - 6u));
 
   if (!initConfigStorage()) {
     uint8_t err[] = { 0xFFu, RESP_CONFIG_READ, 0x00u, 0x00u };
