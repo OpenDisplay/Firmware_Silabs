@@ -773,8 +773,10 @@ extern "C" int opendisplay_display_direct_write_start(const uint8_t *payload, ui
   s_active = true;
 
   if (s_dw_compressed) {
-    if ((d->transmission_modes & TRANSMISSION_MODE_ZIP) == 0u) {
-      printf("[OD] dw start err ZIP not enabled in transmission_modes\r\n");
+    /* ZIP (0x02) and/or streaming_decompression / ZIPXL (0x01): both mean
+     * streaming zlib inflate. Post-2.0 configs may set only bit 0. */
+    if ((d->transmission_modes & (TRANSMISSION_MODE_ZIP | TRANSMISSION_MODE_ZIPXL)) == 0u) {
+      printf("[OD] dw start err compression not enabled in transmission_modes\r\n");
       opendisplay_display_abort();
       return -4;
     }
