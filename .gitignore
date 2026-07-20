@@ -17,6 +17,9 @@ Thumbs.db
 *.swp
 *~
 
+# VS Code local configuration (machine-specific)
+.vscode/c_cpp_properties.json
+
 # Python (e.g. tooling under third_party)
 __pycache__/
 *.py[cod]
