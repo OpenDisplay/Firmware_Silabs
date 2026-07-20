@@ -1108,6 +1108,16 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
       }
       opendisplay_ble_schedule_dfu();
       break;
+    case CMD_POWER_OFF:
+      {
+        /* Canonical 2.1 puts power-off on 0x52 (deep-sleep moved to 0x53).
+         * Silabs has no power-latch hardware, so report it unsupported rather
+         * than fall through silently: {0xFF, 0x52, err, 0x00} with
+         * OD_ERR_POWER_OFF_UNSUPPORTED (0x00). */
+        uint8_t nack[] = { 0xFFu, RESP_POWER_OFF, OD_ERR_POWER_OFF_UNSUPPORTED, 0x00u };
+        pipe_send(connection, nack, sizeof(nack));
+      }
+      break;
     case CMD_DEEP_SLEEP:
       {
         uint8_t ok[] = { 0x00u, RESP_DEEP_SLEEP };
@@ -1161,8 +1171,8 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
     case CMD_DIRECT_WRITE_END:
       handle_direct_write_end(connection, payload, payload_len);
       break;
-    case CMD_DIRECT_WRITE_PARTIAL_START:
-    case CMD_BUZZER_ACTIVATE: {
+    case CMD_PARTIAL_WRITE_START:
+    case CMD_BUZZER: {
       /* Not implemented on Silabs, but the client sends these and blocks
        * waiting for a reply. Emit a NACK so it fails fast instead of timing
        * out: {0xFF, cmd_low, err, 0x00} matches the client's parse_nack()
