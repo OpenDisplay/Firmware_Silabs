@@ -197,6 +197,7 @@ target_include_directories(slc PUBLIC
    "../config/btconf"
    "../autogen"
    "../."
+   "../include"
    "../third_party/segger_rtt"
    "../third_party/bb_epaper/src"
    "../third_party/uzlib/src"
