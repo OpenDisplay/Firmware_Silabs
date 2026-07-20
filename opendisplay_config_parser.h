@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "opendisplay_structs.h"
+#include "opendisplay_runtime.h"
 
 #ifdef __cplusplus
 extern "C" {

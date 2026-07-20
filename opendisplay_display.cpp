@@ -4,7 +4,7 @@
 #include "opendisplay_config_parser.h"
 #include "opendisplay_constants.h"
 #include "opendisplay_epd_map.h"
-#include "opendisplay_structs.h"
+#include "opendisplay_runtime.h"
 #include "bb_epaper.h"
 #include "em_cmu.h"
 #include "em_gpio.h"

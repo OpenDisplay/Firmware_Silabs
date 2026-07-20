@@ -6,7 +6,7 @@
 #include "opendisplay_constants.h"
 #include "opendisplay_protocol.h"
 #include "opendisplay_config_parser.h"
-#include "opendisplay_structs.h"
+#include "opendisplay_runtime.h"
 #include "em_device.h"
 #include "em_system.h"
 #include "psa/crypto.h"
