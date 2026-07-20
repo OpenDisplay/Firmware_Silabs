@@ -558,7 +558,7 @@ static void reply_firmware_version(uint8_t connection)
   if (sha_len > 40u) {
     sha_len = 40u;
   }
-  rsp[o++] = 0x00u;
+  rsp[o++] = RESP_ACK;
   rsp[o++] = RESP_FIRMWARE_VERSION;
   rsp[o++] = major;
   rsp[o++] = minor;
@@ -572,7 +572,7 @@ static void reply_read_msd(uint8_t connection)
 {
   uint8_t rsp[2 + 16];
 
-  rsp[0] = 0x00u;
+  rsp[0] = RESP_ACK;
   rsp[1] = RESP_MSD_READ;
   opendisplay_ble_copy_msd_bytes(&rsp[2]);
   pipe_send(connection, rsp, sizeof(rsp));
@@ -589,7 +589,7 @@ static bool authenticate_handle(const uint8_t *payload, uint16_t payload_len, ui
   uint8_t server_input[36];
 
   *rsp_len = 3u;
-  rsp[0] = 0x00u;
+  rsp[0] = RESP_ACK;
   rsp[1] = RESP_AUTHENTICATE;
   rsp[2] = AUTH_STATUS_ERROR;
   if (sec == NULL || sec->encryption_enabled == 0u) {
@@ -734,14 +734,14 @@ static void handle_config_read(uint8_t connection)
                  (MAX_RESPONSE_DATA_SIZE - 6u));
 
   if (!initConfigStorage()) {
-    uint8_t err[] = { 0xFFu, RESP_CONFIG_READ, 0x00u, 0x00u };
+    uint8_t err[] = { RESP_NACK, RESP_CONFIG_READ, 0x00u, 0x00u };
     pipe_send(connection, err, sizeof(err));
     return;
   }
 
   if (!loadConfig(config_data, &config_len)) {
     uint8_t empty[] = {
-      0x00u, RESP_CONFIG_READ, 0x00u, 0x00u, 0x00u, 0x00u,
+      RESP_ACK, RESP_CONFIG_READ, 0x00u, 0x00u, 0x00u, 0x00u,
     };
     pipe_send(connection, empty, sizeof(empty));
     return;
@@ -755,7 +755,7 @@ static void handle_config_read(uint8_t connection)
     uint16_t response_len = 0;
     uint16_t chunk_size;
 
-    s_cfg_read_buf[response_len++] = 0x00u;
+    s_cfg_read_buf[response_len++] = RESP_ACK;
     s_cfg_read_buf[response_len++] = RESP_CONFIG_READ;
     s_cfg_read_buf[response_len++] = (uint8_t)(chunk_number & 0xFFu);
     s_cfg_read_buf[response_len++] = (uint8_t)((chunk_number >> 8) & 0xFFu);
@@ -790,8 +790,8 @@ static void handle_config_read(uint8_t connection)
 
 static void handle_config_write(uint8_t connection, const uint8_t *data, uint16_t len)
 {
-  uint8_t ack[] = { 0x00u, RESP_CONFIG_WRITE, 0x00u, 0x00u };
-  uint8_t err[] = { 0xFFu, RESP_CONFIG_WRITE, 0x00u, 0x00u };
+  uint8_t ack[] = { RESP_ACK, RESP_CONFIG_WRITE, 0x00u, 0x00u };
+  uint8_t err[] = { RESP_NACK, RESP_CONFIG_WRITE, 0x00u, 0x00u };
 
   if (len == 0u) {
     return;
@@ -866,8 +866,8 @@ static void handle_config_write(uint8_t connection, const uint8_t *data, uint16_
 
 static void handle_config_chunk(uint8_t connection, const uint8_t *data, uint16_t len)
 {
-  uint8_t ack[] = { 0x00u, RESP_CONFIG_CHUNK, 0x00u, 0x00u };
-  uint8_t err[] = { 0xFFu, RESP_CONFIG_CHUNK, 0x00u, 0x00u };
+  uint8_t ack[] = { RESP_ACK, RESP_CONFIG_CHUNK, 0x00u, 0x00u };
+  uint8_t err[] = { RESP_NACK, RESP_CONFIG_CHUNK, 0x00u, 0x00u };
 
   if (!s_cfg_chunk.active || s_cfg_chunk.connection != connection) {
     pipe_send(connection, err, sizeof(err));
@@ -1103,7 +1103,7 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
       break;
     case CMD_ENTER_DFU:
       {
-        uint8_t ok[] = { 0x00u, RESP_ENTER_DFU };
+        uint8_t ok[] = { RESP_ACK, RESP_ENTER_DFU };
         pipe_send(connection, ok, sizeof(ok));
       }
       opendisplay_ble_schedule_dfu();
@@ -1114,21 +1114,21 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
          * Silabs has no power-latch hardware, so report it unsupported rather
          * than fall through silently: {0xFF, 0x52, err, 0x00} with
          * OD_ERR_POWER_OFF_UNSUPPORTED (0x00). */
-        uint8_t nack[] = { 0xFFu, RESP_POWER_OFF, OD_ERR_POWER_OFF_UNSUPPORTED, 0x00u };
+        uint8_t nack[] = { RESP_NACK, RESP_POWER_OFF, OD_ERR_POWER_OFF_UNSUPPORTED, 0x00u };
         pipe_send(connection, nack, sizeof(nack));
       }
       break;
     case CMD_DEEP_SLEEP:
       {
-        uint8_t ok[] = { 0x00u, RESP_DEEP_SLEEP };
+        uint8_t ok[] = { RESP_ACK, RESP_DEEP_SLEEP };
         pipe_send(connection, ok, sizeof(ok));
       }
       opendisplay_ble_schedule_deep_sleep();
       break;
     case CMD_LED_ACTIVATE: {
-      uint8_t ok[] = { 0x00u, RESP_LED_ACTIVATE_ACK, 0x00u, 0x00u };
-      uint8_t e1[] = { 0xFFu, RESP_LED_ACTIVATE_ACK, 0x01u, 0x00u };
-      uint8_t e2[] = { 0xFFu, RESP_LED_ACTIVATE_ACK, 0x02u, 0x00u };
+      uint8_t ok[] = { RESP_ACK, RESP_LED_ACTIVATE_ACK, 0x00u, 0x00u };
+      uint8_t e1[] = { RESP_NACK, RESP_LED_ACTIVATE_ACK, 0x01u, 0x00u };
+      uint8_t e2[] = { RESP_NACK, RESP_LED_ACTIVATE_ACK, 0x02u, 0x00u };
 
       if (payload_len < 1u) {
         pipe_send(connection, e1, sizeof(e1));
@@ -1143,8 +1143,8 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
       break;
     }
     case CMD_LED_STOP: {
-      uint8_t ok[] = { 0x00u, RESP_LED_STOP_ACK, 0x00u, 0x00u };
-      uint8_t e2[] = { 0xFFu, RESP_LED_STOP_ACK, 0x02u, 0x00u };
+      uint8_t ok[] = { RESP_ACK, RESP_LED_STOP_ACK, 0x00u, 0x00u };
+      uint8_t e2[] = { RESP_NACK, RESP_LED_STOP_ACK, 0x02u, 0x00u };
       int rc;
 
       if (payload_len >= 1u) {
