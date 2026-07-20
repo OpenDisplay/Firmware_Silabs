@@ -273,8 +273,8 @@ static void od_buttons_init_from_config(void)
   for (i = 0; i < cfg->binary_input_count; i++) {
     const struct BinaryInputs *input = &cfg->binary_inputs[i];
     const uint8_t local_pins[8] = {
-      input->reserved_pin_1, input->reserved_pin_2, input->reserved_pin_3, input->reserved_pin_4,
-      input->reserved_pin_5, input->reserved_pin_6, input->reserved_pin_7, input->reserved_pin_8
+      input->input_pin_1, input->input_pin_2, input->input_pin_3, input->input_pin_4,
+      input->input_pin_5, input->input_pin_6, input->input_pin_7, input->input_pin_8
     };
     if (input->input_type != 1u || input->button_data_byte_index >= sizeof(dynamic_return)) {
       printf("[OD][BTN] skip instance=%u input_type=%u byte_index=%u\r\n",
@@ -296,7 +296,7 @@ static void od_buttons_init_from_config(void)
       bool pressed;
       uint8_t pin_state_raw;
       uint8_t pin_cfg = local_pins[bi];
-      bool pin_used = (input->input_flags & (uint8_t)(1u << bi)) != 0u;
+      bool pin_used = (input->pins_used & (uint8_t)(1u << bi)) != 0u;
       if (!pin_used) {
         continue;
       }

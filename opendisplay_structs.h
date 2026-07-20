@@ -9,7 +9,9 @@ struct SystemConfig {
   uint8_t communication_modes;
   uint8_t device_flags;
   uint8_t pwr_pin;
-  uint8_t reserved[17];
+  uint8_t reserved[15];
+  uint8_t pwr_pin_2;
+  uint8_t pwr_pin_3;
 } __attribute__((packed));
 
 struct ManufacturerData {
@@ -36,7 +38,12 @@ struct PowerOption {
   uint16_t voltage_scaling_factor;
   uint32_t deep_sleep_current_ua;
   uint16_t deep_sleep_time_seconds;
-  uint8_t reserved[10];
+  uint8_t charge_enable_pin;
+  uint8_t charge_state_pin;
+  uint8_t charger_flags;
+  uint16_t min_wake_time_seconds;
+  uint8_t screen_timeout_seconds;
+  uint8_t reserved[4];
 } __attribute__((packed));
 
 struct DisplayConfig {
@@ -47,7 +54,7 @@ struct DisplayConfig {
   uint16_t pixel_height;
   uint16_t active_width_mm;
   uint16_t active_height_mm;
-  uint16_t tag_type;
+  uint16_t legacy_tag_type;
   uint8_t rotation;
   uint8_t reset_pin;
   uint8_t busy_pin;
@@ -58,14 +65,15 @@ struct DisplayConfig {
   uint8_t color_scheme;
   uint8_t transmission_modes;
   uint8_t clk_pin;
-  uint8_t reserved_pin_2;
+  uint8_t cs_pin_2;
   uint8_t reserved_pin_3;
   uint8_t reserved_pin_4;
   uint8_t reserved_pin_5;
   uint8_t reserved_pin_6;
   uint8_t reserved_pin_7;
   uint8_t reserved_pin_8;
-  uint8_t reserved[15];
+  uint16_t full_update_mC;
+  uint8_t reserved[13];
 } __attribute__((packed));
 
 struct LedConfig {
@@ -83,7 +91,9 @@ struct SensorData {
   uint8_t instance_number;
   uint16_t sensor_type;
   uint8_t bus_id;
-  uint8_t reserved[26];
+  uint8_t i2c_addr_7bit;
+  uint8_t msd_data_start_byte;
+  uint8_t reserved[24];
 } __attribute__((packed));
 
 struct DataBus {
@@ -107,20 +117,22 @@ struct BinaryInputs {
   uint8_t instance_number;
   uint8_t input_type;
   uint8_t display_as;
-  uint8_t reserved_pin_1;
-  uint8_t reserved_pin_2;
-  uint8_t reserved_pin_3;
-  uint8_t reserved_pin_4;
-  uint8_t reserved_pin_5;
-  uint8_t reserved_pin_6;
-  uint8_t reserved_pin_7;
-  uint8_t reserved_pin_8;
-  uint8_t input_flags;
+  uint8_t input_pin_1;
+  uint8_t input_pin_2;
+  uint8_t input_pin_3;
+  uint8_t input_pin_4;
+  uint8_t input_pin_5;
+  uint8_t input_pin_6;
+  uint8_t input_pin_7;
+  uint8_t input_pin_8;
+  uint8_t pins_used;
   uint8_t invert;
   uint8_t pullups;
   uint8_t pulldowns;
   uint8_t button_data_byte_index;
-  uint8_t reserved[14];
+  uint8_t power_off_flags;
+  uint8_t power_off_hold_sec;
+  uint8_t reserved[12];
 } __attribute__((packed));
 
 struct NfcConfig {

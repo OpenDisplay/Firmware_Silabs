@@ -382,7 +382,7 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
   h = (uint16_t)epd.height();
 
   memset(payload, 0, sizeof(payload));
-  tag_type = dc->tag_type;
+  tag_type = dc->legacy_tag_type;
   payload[0] = (uint8_t)((tag_type >> 8) & 0xFFu);
   payload[1] = (uint8_t)(tag_type & 0xFFu);
   uid = SYSTEM_GetUnique();
