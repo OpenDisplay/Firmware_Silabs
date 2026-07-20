@@ -13,7 +13,8 @@
         "binaryDir": "${sourceDir}/build",
         "toolchainFile": "${sourceDir}/toolchain.cmake",
         "cacheVariables": {
-          "CMAKE_CONFIGURATION_TYPES": "base"
+          "CMAKE_CONFIGURATION_TYPES": "base",
+          "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
         }
       }
     ],
