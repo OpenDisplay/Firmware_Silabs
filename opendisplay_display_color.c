@@ -1,4 +1,5 @@
 #include "opendisplay_display_color.h"
+#include "opendisplay_structs.h"  /* ColorScheme enum (OD_COLOR_SCHEME_*) */
 
 /*
  * Byte counts follow Firmware handleDirectWriteStart (display_service.cpp) and
@@ -15,13 +16,13 @@ uint32_t opendisplay_color_bitplane_plane_bytes(uint32_t w, uint32_t h)
 
 int opendisplay_color_bits_per_pixel(uint8_t color_scheme)
 {
-  if (color_scheme == 4u) {
+  if (color_scheme == OD_COLOR_SCHEME_BWGBRY) {
     return 4;
   }
-  if (color_scheme == 3u || color_scheme == 5u) {
+  if (color_scheme == OD_COLOR_SCHEME_BWRY || color_scheme == OD_COLOR_SCHEME_GRAY4) {
     return 2;
   }
-  if (color_scheme == 6u) {
+  if (color_scheme == OD_COLOR_SCHEME_GRAY16) {
     return 4;
   }
   return 1;
@@ -29,18 +30,18 @@ int opendisplay_color_bits_per_pixel(uint8_t color_scheme)
 
 bool opendisplay_color_is_bitplanes(uint8_t color_scheme)
 {
-  return (color_scheme == 1u || color_scheme == 2u);
+  return (color_scheme == OD_COLOR_SCHEME_BWR || color_scheme == OD_COLOR_SCHEME_BWY);
 }
 
 int opendisplay_color_start_plane(uint8_t color_scheme)
 {
-  if (color_scheme == 0u || color_scheme == 6u) {
+  if (color_scheme == OD_COLOR_SCHEME_MONO || color_scheme == OD_COLOR_SCHEME_GRAY16) {
     return 0;
   }
-  if (color_scheme == 1u || color_scheme == 2u) {
+  if (color_scheme == OD_COLOR_SCHEME_BWR || color_scheme == OD_COLOR_SCHEME_BWY) {
     return 0;
   }
-  if (color_scheme == 5u) {
+  if (color_scheme == OD_COLOR_SCHEME_GRAY4) {
     return 1;
   }
   return 1;
