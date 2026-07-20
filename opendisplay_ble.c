@@ -1264,6 +1264,12 @@ static bool od_nfc_write_record_raw(uint8_t rec_type, const uint8_t *data, uint1
   if (data == NULL || data_len == 0u) {
     return false;
   }
+  /* Defense-in-depth: bound data_len so the uint16_t payload_len math below
+   * (1 + hdr + data_len) cannot wrap and overrun s_od_nfc_write_blocks. Callers
+   * validate too, but this keeps the record builder memory-safe on its own. */
+  if (data_len > sizeof(s_od_nfc_write_blocks)) {
+    return false;
+  }
   memset(blocks, 0, sizeof(s_od_nfc_write_blocks));
 
   if (rec_type == OD_NFC_REC_TEXT) {
