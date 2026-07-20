@@ -26,10 +26,6 @@
 #define OD_APP_VERSION         0x0100u
 #endif
 
-#ifndef OPENDISPLAY_MAX_PIPE_LEN
-#define OPENDISPLAY_MAX_PIPE_LEN 244u
-#endif
-
 /* BLE adv interval in units of 0.625 ms (used when not connected / undirected adv). */
 #define OD_ADV_INTERVAL_IDLE_SLOTS 1600u
 #define OD_ADV_INTERVAL_BOOST_MIN    32u
@@ -176,7 +172,7 @@ static void od_enter_gecko_bootloader(void)
 
 static bool od_pin_decode(uint8_t v, GPIO_Port_TypeDef *port_out, uint8_t *pin_out)
 {
-  if (v == 0xFFu) {
+  if (v == GPIO_PIN_UNUSED) {
     return false;
   }
   unsigned pr = (unsigned)(v >> 4) & 0x0Fu;
@@ -1676,7 +1672,7 @@ static sl_status_t install_opendisplay_gatt(void)
                                               0,
                                               uuid_pipe,
                                               sl_bt_gattdb_variable_length_value,
-                                              OPENDISPLAY_MAX_PIPE_LEN,
+                                              OD_PIPE_MAX_PAYLOAD,
                                               1,
                                               &pipe_init,
                                               &ch_pipe);

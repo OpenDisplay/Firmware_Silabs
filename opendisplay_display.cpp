@@ -59,7 +59,7 @@ static bool decode_pin(uint8_t v, GPIO_Port_TypeDef *port_out, uint8_t *pin_out)
 {
   unsigned pr;
   unsigned pn;
-  if (v == 0xFFu) {
+  if (v == GPIO_PIN_UNUSED) {
     return false;
   }
   pr = (unsigned)(v >> 4) & 0x0Fu;
@@ -113,7 +113,7 @@ static void display_power_set(bool on)
     opendisplay_display_park_pins();
   }
   p = cfg->system_config.pwr_pin;
-  if (p == 0xFFu) {
+  if (p == GPIO_PIN_UNUSED) {
     p = OD_FALLBACK_DISPLAY_PWR_PIN;
   }
   if (!decode_pin(p, &port, &pin)) {
