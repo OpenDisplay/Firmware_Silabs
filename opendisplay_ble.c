@@ -26,10 +26,6 @@
 #define OD_APP_VERSION         0x0100u
 #endif
 
-#ifndef OPENDISPLAY_MAX_PIPE_LEN
-#define OPENDISPLAY_MAX_PIPE_LEN 244u
-#endif
-
 /* BLE adv interval in units of 0.625 ms (used when not connected / undirected adv). */
 #define OD_ADV_INTERVAL_IDLE_SLOTS 1600u
 #define OD_ADV_INTERVAL_BOOST_MIN    32u
@@ -176,7 +172,7 @@ static void od_enter_gecko_bootloader(void)
 
 static bool od_pin_decode(uint8_t v, GPIO_Port_TypeDef *port_out, uint8_t *pin_out)
 {
-  if (v == 0xFFu) {
+  if (v == GPIO_PIN_UNUSED) {
     return false;
   }
   unsigned pr = (unsigned)(v >> 4) & 0x0Fu;
@@ -273,8 +269,8 @@ static void od_buttons_init_from_config(void)
   for (i = 0; i < cfg->binary_input_count; i++) {
     const struct BinaryInputs *input = &cfg->binary_inputs[i];
     const uint8_t local_pins[8] = {
-      input->reserved_pin_1, input->reserved_pin_2, input->reserved_pin_3, input->reserved_pin_4,
-      input->reserved_pin_5, input->reserved_pin_6, input->reserved_pin_7, input->reserved_pin_8
+      input->input_pin_1, input->input_pin_2, input->input_pin_3, input->input_pin_4,
+      input->input_pin_5, input->input_pin_6, input->input_pin_7, input->input_pin_8
     };
     if (input->input_type != 1u || input->button_data_byte_index >= sizeof(dynamic_return)) {
       printf("[OD][BTN] skip instance=%u input_type=%u byte_index=%u\r\n",
@@ -296,7 +292,7 @@ static void od_buttons_init_from_config(void)
       bool pressed;
       uint8_t pin_state_raw;
       uint8_t pin_cfg = local_pins[bi];
-      bool pin_used = (input->input_flags & (uint8_t)(1u << bi)) != 0u;
+      bool pin_used = (input->pins_used & (uint8_t)(1u << bi)) != 0u;
       if (!pin_used) {
         continue;
       }
@@ -1682,7 +1678,7 @@ static sl_status_t install_opendisplay_gatt(void)
                                               0,
                                               uuid_pipe,
                                               sl_bt_gattdb_variable_length_value,
-                                              OPENDISPLAY_MAX_PIPE_LEN,
+                                              OD_PIPE_MAX_PAYLOAD,
                                               1,
                                               &pipe_init,
                                               &ch_pipe);

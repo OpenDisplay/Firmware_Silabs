@@ -34,6 +34,10 @@ include:
 - path: .
   file_list:
   - path: app.h
+- path: include
+  file_list:
+  - path: opendisplay_protocol.h
+  - path: opendisplay_structs.h
 sdk:
   vendor: silabs
   id: simplicity_sdk

@@ -19,7 +19,7 @@ static uint16_t crc16_ccitt_feed(uint16_t crc, uint8_t b)
     crc ^= (uint16_t)((uint16_t)b << 8);
     for (int j = 0; j < 8; j++) {
         if ((crc & 0x8000U) != 0U) {
-            crc = (uint16_t)(((uint32_t)crc << 1) ^ 0x1021U);
+            crc = (uint16_t)(((uint32_t)crc << 1) ^ OD_CONFIG_CRC_POLY);
         } else {
             crc = (uint16_t)((uint32_t)crc << 1);
         }
@@ -30,14 +30,14 @@ static uint16_t crc16_ccitt_feed(uint16_t crc, uint8_t b)
 static uint16_t config_toolbox_outer_crc16(const uint8_t *data, uint32_t body_len)
 {
     if (body_len < 2U) {
-        uint16_t crc = 0xFFFFU;
+        uint16_t crc = OD_CONFIG_CRC_INIT;
 
         for (uint32_t i = 0; i < body_len; i++) {
             crc = crc16_ccitt_feed(crc, data[i]);
         }
         return crc;
     }
-    uint16_t crc = 0xFFFFU;
+    uint16_t crc = OD_CONFIG_CRC_INIT;
 
     crc = crc16_ccitt_feed(crc, 0);
     crc = crc16_ccitt_feed(crc, 0);

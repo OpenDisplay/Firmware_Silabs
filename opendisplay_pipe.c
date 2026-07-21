@@ -6,7 +6,7 @@
 #include "opendisplay_constants.h"
 #include "opendisplay_protocol.h"
 #include "opendisplay_config_parser.h"
-#include "opendisplay_structs.h"
+#include "opendisplay_runtime.h"
 #include "em_device.h"
 #include "em_system.h"
 #include "psa/crypto.h"
@@ -276,7 +276,7 @@ static bool od_ccm_encrypt(const uint8_t *nonce,
   memcpy(&blk[1], nonce, 13u);
   blk[14] = 0x00u; blk[15] = 0x00u;
   if (!od_ccm_ecb(blk, stream)) return false;
-  for (i = 0; i < 12u; i++) tag[i] = mac[i] ^ stream[i];
+  for (i = 0; i < ENCRYPTION_TAG_SIZE; i++) tag[i] = mac[i] ^ stream[i];
 
   for (i = 0; i < full; i++) {
     blk[0] = 0x01u; memcpy(&blk[1], nonce, 13u);
@@ -304,7 +304,7 @@ static bool od_ccm_decrypt(const uint8_t *nonce,
 {
   uint8_t blk[16], mac[16], stream[16];
   uint16_t i, full, rem;
-  uint8_t expected[12], diff;
+  uint8_t expected[ENCRYPTION_TAG_SIZE], diff;
 
   full = cipher_len / 16u; rem = cipher_len % 16u;
   for (i = 0; i < full; i++) {
@@ -347,10 +347,10 @@ static bool od_ccm_decrypt(const uint8_t *nonce,
   blk[0] = 0x01u; memcpy(&blk[1], nonce, 13u);
   blk[14] = 0x00u; blk[15] = 0x00u;
   if (!od_ccm_ecb(blk, stream)) return false;
-  for (i = 0; i < 12u; i++) expected[i] = mac[i] ^ stream[i];
+  for (i = 0; i < ENCRYPTION_TAG_SIZE; i++) expected[i] = mac[i] ^ stream[i];
 
   diff = 0u;
-  for (i = 0; i < 12u; i++) diff |= (expected[i] ^ tag[i]);
+  for (i = 0; i < ENCRYPTION_TAG_SIZE; i++) diff |= (expected[i] ^ tag[i]);
   return (diff == 0u);
 }
 
@@ -414,11 +414,11 @@ static bool decrypt_encrypted_payload(uint16_t cmd,
   const uint8_t *cipher;
   const uint8_t *tag;
   uint8_t nonce_ccm[13];
-  uint8_t ad[2];
+  uint8_t ad[BLE_CMD_HEADER_SIZE];
   uint16_t cipher_len;
   uint64_t nonce_counter;
 
-  if (payload_len < (16u + 12u + 1u) || !session_alive()) {
+  if (payload_len < (ENCRYPTION_NONCE_SIZE + ENCRYPTION_TAG_SIZE + 1u) || !session_alive()) {
     return false;
   }
   nonce      = payload;
@@ -432,9 +432,9 @@ static bool decrypt_encrypted_payload(uint16_t cmd,
     }
     return false;
   }
-  tag        = &payload[payload_len - 12u];
-  cipher     = &payload[16u];
-  cipher_len = (uint16_t)(payload_len - 16u - 12u);
+  tag        = &payload[payload_len - ENCRYPTION_TAG_SIZE];
+  cipher     = &payload[ENCRYPTION_NONCE_SIZE];
+  cipher_len = (uint16_t)(payload_len - ENCRYPTION_NONCE_SIZE - ENCRYPTION_TAG_SIZE);
   memcpy(nonce_ccm, &nonce[3], sizeof(nonce_ccm));
   ad[0] = (uint8_t)((cmd >> 8) & 0xFFu);
   ad[1] = (uint8_t)(cmd & 0xFFu);
@@ -463,10 +463,10 @@ static bool encrypt_response_payload(const uint8_t *plain,
                                      uint8_t *out,
                                      uint16_t *out_len)
 {
-  uint8_t nonce[16];
+  uint8_t nonce[ENCRYPTION_NONCE_SIZE];
   uint8_t nonce_ccm[13];
-  uint8_t ad[2];
-  uint8_t tag[12];
+  uint8_t ad[BLE_CMD_HEADER_SIZE];
+  uint8_t tag[ENCRYPTION_TAG_SIZE];
   uint16_t payload_len;
 
   if (!session_alive() || plain_len < 2u || plain_len > 514u) {
@@ -486,15 +486,15 @@ static bool encrypt_response_payload(const uint8_t *plain,
     memcpy(&s_crypto_payload_buf[1], &plain[2], payload_len);
   }
 
-  memcpy(out, plain, 2u);
-  memcpy(&out[2], nonce, 16u);
+  memcpy(out, plain, BLE_CMD_HEADER_SIZE);
+  memcpy(&out[BLE_CMD_HEADER_SIZE], nonce, ENCRYPTION_NONCE_SIZE);
   if (!od_ccm_encrypt(nonce_ccm, ad,
                        s_crypto_payload_buf, (uint16_t)(payload_len + 1u),
-                       &out[18], tag)) {
+                       &out[BLE_CMD_HEADER_SIZE + ENCRYPTION_NONCE_SIZE], tag)) {
     return false;
   }
-  memcpy(&out[18 + payload_len + 1u], tag, 12u);
-  *out_len = (uint16_t)(18u + payload_len + 1u + 12u);
+  memcpy(&out[BLE_CMD_HEADER_SIZE + ENCRYPTION_NONCE_SIZE + payload_len + 1u], tag, ENCRYPTION_TAG_SIZE);
+  *out_len = (uint16_t)(BLE_CMD_HEADER_SIZE + ENCRYPTION_NONCE_SIZE + payload_len + 1u + ENCRYPTION_TAG_SIZE);
   s_session.last_activity_ms = od_now_ms();
   return true;
 }
@@ -558,7 +558,7 @@ static void reply_firmware_version(uint8_t connection)
   if (sha_len > 40u) {
     sha_len = 40u;
   }
-  rsp[o++] = 0x00u;
+  rsp[o++] = RESP_ACK;
   rsp[o++] = RESP_FIRMWARE_VERSION;
   rsp[o++] = major;
   rsp[o++] = minor;
@@ -572,7 +572,7 @@ static void reply_read_msd(uint8_t connection)
 {
   uint8_t rsp[2 + 16];
 
-  rsp[0] = 0x00u;
+  rsp[0] = RESP_ACK;
   rsp[1] = RESP_MSD_READ;
   opendisplay_ble_copy_msd_bytes(&rsp[2]);
   pipe_send(connection, rsp, sizeof(rsp));
@@ -589,7 +589,7 @@ static bool authenticate_handle(const uint8_t *payload, uint16_t payload_len, ui
   uint8_t server_input[36];
 
   *rsp_len = 3u;
-  rsp[0] = 0x00u;
+  rsp[0] = RESP_ACK;
   rsp[1] = RESP_AUTHENTICATE;
   rsp[2] = AUTH_STATUS_ERROR;
   if (sec == NULL || sec->encryption_enabled == 0u) {
@@ -681,8 +681,8 @@ static bool authenticate_handle(const uint8_t *payload, uint16_t payload_len, ui
 
 static void handle_direct_write_start(uint8_t connection, const uint8_t *payload, uint16_t payload_len)
 {
-  uint8_t ok[] = { 0x00u, 0x70u };
-  uint8_t err[] = { 0xFFu, 0x70u };
+  uint8_t ok[] = { RESP_ACK, RESP_DIRECT_WRITE_START_ACK };
+  uint8_t err[] = { RESP_NACK, RESP_DIRECT_WRITE_START_ACK };
   printf("[OD] pipe 0070 recv len=%u (epd init next)\r\n", (unsigned)payload_len);
   if (opendisplay_display_direct_write_start(payload, payload_len) == 0) {
     pipe_send(connection, ok, sizeof(ok));
@@ -693,8 +693,8 @@ static void handle_direct_write_start(uint8_t connection, const uint8_t *payload
 
 static void handle_direct_write_data(uint8_t connection, const uint8_t *payload, uint16_t payload_len)
 {
-  uint8_t ack_data[] = { 0x00u, 0x71u };
-  uint8_t err[] = { 0xFFu, 0x71u };
+  uint8_t ack_data[] = { RESP_ACK, RESP_DIRECT_WRITE_DATA_ACK };
+  uint8_t err[] = { RESP_NACK, RESP_DIRECT_WRITE_DATA_ACK };
 
   if (opendisplay_display_direct_write_data(payload, payload_len) != 0) {
     pipe_send(connection, err, sizeof(err));
@@ -707,10 +707,10 @@ static void handle_direct_write_data(uint8_t connection, const uint8_t *payload,
 static void handle_direct_write_end(uint8_t connection, const uint8_t *payload, uint16_t payload_len)
 {
   bool refresh_ok = false;
-  uint8_t ack_end[] = { 0x00u, 0x72u };
-  uint8_t ack_refresh_ok[] = { 0x00u, 0x73u };
-  uint8_t ack_refresh_timeout[] = { 0x00u, 0x74u };
-  uint8_t err[] = { 0xFFu, 0x72u };
+  uint8_t ack_end[] = { RESP_ACK, RESP_DIRECT_WRITE_END_ACK };
+  uint8_t ack_refresh_ok[] = { RESP_ACK, RESP_DIRECT_WRITE_REFRESH_SUCCESS };
+  uint8_t ack_refresh_timeout[] = { RESP_ACK, RESP_DIRECT_WRITE_REFRESH_TIMEOUT };
+  uint8_t err[] = { RESP_NACK, RESP_DIRECT_WRITE_END_ACK };
 
   if (opendisplay_display_direct_write_end(payload, payload_len, &refresh_ok) != 0) {
     pipe_send(connection, err, sizeof(err));
@@ -734,14 +734,14 @@ static void handle_config_read(uint8_t connection)
                  (MAX_RESPONSE_DATA_SIZE - 6u));
 
   if (!initConfigStorage()) {
-    uint8_t err[] = { 0xFFu, RESP_CONFIG_READ, 0x00u, 0x00u };
+    uint8_t err[] = { RESP_NACK, RESP_CONFIG_READ, 0x00u, 0x00u };
     pipe_send(connection, err, sizeof(err));
     return;
   }
 
   if (!loadConfig(config_data, &config_len)) {
     uint8_t empty[] = {
-      0x00u, RESP_CONFIG_READ, 0x00u, 0x00u, 0x00u, 0x00u,
+      RESP_ACK, RESP_CONFIG_READ, 0x00u, 0x00u, 0x00u, 0x00u,
     };
     pipe_send(connection, empty, sizeof(empty));
     return;
@@ -755,7 +755,7 @@ static void handle_config_read(uint8_t connection)
     uint16_t response_len = 0;
     uint16_t chunk_size;
 
-    s_cfg_read_buf[response_len++] = 0x00u;
+    s_cfg_read_buf[response_len++] = RESP_ACK;
     s_cfg_read_buf[response_len++] = RESP_CONFIG_READ;
     s_cfg_read_buf[response_len++] = (uint8_t)(chunk_number & 0xFFu);
     s_cfg_read_buf[response_len++] = (uint8_t)((chunk_number >> 8) & 0xFFu);
@@ -790,8 +790,8 @@ static void handle_config_read(uint8_t connection)
 
 static void handle_config_write(uint8_t connection, const uint8_t *data, uint16_t len)
 {
-  uint8_t ack[] = { 0x00u, RESP_CONFIG_WRITE, 0x00u, 0x00u };
-  uint8_t err[] = { 0xFFu, RESP_CONFIG_WRITE, 0x00u, 0x00u };
+  uint8_t ack[] = { RESP_ACK, RESP_CONFIG_WRITE, 0x00u, 0x00u };
+  uint8_t err[] = { RESP_NACK, RESP_CONFIG_WRITE, 0x00u, 0x00u };
 
   if (len == 0u) {
     return;
@@ -866,8 +866,8 @@ static void handle_config_write(uint8_t connection, const uint8_t *data, uint16_
 
 static void handle_config_chunk(uint8_t connection, const uint8_t *data, uint16_t len)
 {
-  uint8_t ack[] = { 0x00u, RESP_CONFIG_CHUNK, 0x00u, 0x00u };
-  uint8_t err[] = { 0xFFu, RESP_CONFIG_CHUNK, 0x00u, 0x00u };
+  uint8_t ack[] = { RESP_ACK, RESP_CONFIG_CHUNK, 0x00u, 0x00u };
+  uint8_t err[] = { RESP_NACK, RESP_CONFIG_CHUNK, 0x00u, 0x00u };
 
   if (!s_cfg_chunk.active || s_cfg_chunk.connection != connection) {
     pipe_send(connection, err, sizeof(err));
@@ -915,22 +915,22 @@ static void handle_nfc_endpoint(uint8_t connection, const uint8_t *payload, uint
   uint8_t rec_type;
 
   if (payload == NULL || payload_len < 1u) {
-    uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x01u };
+    uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_MALFORMED };
     pipe_send(connection, err, sizeof(err));
     return;
   }
 
-  if (payload[0] == 0x00u) {
+  if (payload[0] == NFC_SUB_READ) {
     uint16_t max_out = (uint16_t)(OD_PIPE_MAX_PAYLOAD - 6u);
     out_len = max_out;
     if (!opendisplay_ble_nfc_read(&rec_type, &s_nfc_rsp_buf[6], &out_len, max_out)) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x02u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_READ_FAILED };
       pipe_send(connection, err, sizeof(err));
       return;
     }
-    s_nfc_rsp_buf[0] = 0x00u;
+    s_nfc_rsp_buf[0] = RESP_ACK;
     s_nfc_rsp_buf[1] = RESP_NFC_ENDPOINT;
-    s_nfc_rsp_buf[2] = 0x80u;
+    s_nfc_rsp_buf[2] = NFC_STATUS_READ_DATA;
     s_nfc_rsp_buf[3] = rec_type;
     s_nfc_rsp_buf[4] = (uint8_t)((out_len >> 8) & 0xFFu);
     s_nfc_rsp_buf[5] = (uint8_t)(out_len & 0xFFu);
@@ -938,10 +938,10 @@ static void handle_nfc_endpoint(uint8_t connection, const uint8_t *payload, uint
     return;
   }
 
-  if (payload[0] == 0x01u) {
+  if (payload[0] == NFC_SUB_WRITE) {
     uint16_t text_len;
     if (payload_len < 4u) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x01u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_MALFORMED };
       pipe_send(connection, err, sizeof(err));
       return;
     }
@@ -951,43 +951,43 @@ static void handle_nfc_endpoint(uint8_t connection, const uint8_t *payload, uint
      * >= 0xFFFC, letting an attacker declare a huge length in a tiny frame and
      * pass this bound check (CWE-190 -> OOB read/write in the write sink). */
     if ((uint32_t)text_len + 4u > payload_len) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x01u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_MALFORMED };
       pipe_send(connection, err, sizeof(err));
       return;
     }
     if (!nfc_rec_type_valid(rec_type)) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x05u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_INVALID_REC_TYPE };
       pipe_send(connection, err, sizeof(err));
       return;
     }
     if (!opendisplay_ble_nfc_write(rec_type, &payload[4], text_len)) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x03u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_TAG_WRITE_FAILED };
       pipe_send(connection, err, sizeof(err));
       return;
     }
     {
-      uint8_t ok[] = { 0x00u, RESP_NFC_ENDPOINT, 0x81u };
+      uint8_t ok[] = { RESP_ACK, RESP_NFC_ENDPOINT, NFC_STATUS_WRITE_COMMITTED };
       pipe_send(connection, ok, sizeof(ok));
     }
     return;
   }
 
-  if (payload[0] == 0x10u) {
+  if (payload[0] == NFC_SUB_WRITE_START) {
     uint16_t total_len;
     if (payload_len < 4u) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x01u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_MALFORMED };
       pipe_send(connection, err, sizeof(err));
       return;
     }
     rec_type = payload[1];
     total_len = (uint16_t)(((uint16_t)payload[2] << 8) | payload[3]);
     if (!nfc_rec_type_valid(rec_type)) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x05u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_INVALID_REC_TYPE };
       pipe_send(connection, err, sizeof(err));
       return;
     }
     if (total_len == 0u || total_len > sizeof(s_nfc_write_chunk.data)) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x06u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_BAD_TOTAL_LEN };
       pipe_send(connection, err, sizeof(err));
       return;
     }
@@ -997,21 +997,21 @@ static void handle_nfc_endpoint(uint8_t connection, const uint8_t *payload, uint
     s_nfc_write_chunk.rec_type = rec_type;
     s_nfc_write_chunk.total_len = total_len;
     {
-      uint8_t ok[] = { 0x00u, RESP_NFC_ENDPOINT, 0x82u };
+      uint8_t ok[] = { RESP_ACK, RESP_NFC_ENDPOINT, NFC_STATUS_CHUNK_ACCEPTED };
       pipe_send(connection, ok, sizeof(ok));
     }
     return;
   }
 
-  if (payload[0] == 0x11u) {
+  if (payload[0] == NFC_SUB_WRITE_DATA) {
     uint16_t chunk_len;
     if (!s_nfc_write_chunk.active || s_nfc_write_chunk.connection != connection) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x07u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_CHUNK_NO_START };
       pipe_send(connection, err, sizeof(err));
       return;
     }
     if (payload_len < 2u) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x01u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_MALFORMED };
       pipe_send(connection, err, sizeof(err));
       return;
     }
@@ -1019,7 +1019,7 @@ static void handle_nfc_endpoint(uint8_t connection, const uint8_t *payload, uint
     if ((uint16_t)(s_nfc_write_chunk.received_len + chunk_len) > s_nfc_write_chunk.total_len) {
       nfc_write_chunk_reset();
       {
-        uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x08u };
+        uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_CHUNK_OVERFLOW };
         pipe_send(connection, err, sizeof(err));
       }
       return;
@@ -1027,20 +1027,20 @@ static void handle_nfc_endpoint(uint8_t connection, const uint8_t *payload, uint
     memcpy(&s_nfc_write_chunk.data[s_nfc_write_chunk.received_len], &payload[1], chunk_len);
     s_nfc_write_chunk.received_len = (uint16_t)(s_nfc_write_chunk.received_len + chunk_len);
     {
-      uint8_t ok[] = { 0x00u, RESP_NFC_ENDPOINT, 0x82u };
+      uint8_t ok[] = { RESP_ACK, RESP_NFC_ENDPOINT, NFC_STATUS_CHUNK_ACCEPTED };
       pipe_send(connection, ok, sizeof(ok));
     }
     return;
   }
 
-  if (payload[0] == 0x12u) {
+  if (payload[0] == NFC_SUB_WRITE_END) {
     if (!s_nfc_write_chunk.active || s_nfc_write_chunk.connection != connection) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x07u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_CHUNK_NO_START };
       pipe_send(connection, err, sizeof(err));
       return;
     }
     if (s_nfc_write_chunk.received_len != s_nfc_write_chunk.total_len) {
-      uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x09u };
+      uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_END_LEN_MISMATCH };
       pipe_send(connection, err, sizeof(err));
       return;
     }
@@ -1048,21 +1048,21 @@ static void handle_nfc_endpoint(uint8_t connection, const uint8_t *payload, uint
                                    s_nfc_write_chunk.total_len)) {
       nfc_write_chunk_reset();
       {
-        uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x03u };
+        uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_TAG_WRITE_FAILED };
         pipe_send(connection, err, sizeof(err));
       }
       return;
     }
     nfc_write_chunk_reset();
     {
-      uint8_t ok[] = { 0x00u, RESP_NFC_ENDPOINT, 0x81u };
+      uint8_t ok[] = { RESP_ACK, RESP_NFC_ENDPOINT, NFC_STATUS_WRITE_COMMITTED };
       pipe_send(connection, ok, sizeof(ok));
     }
     return;
   }
 
   {
-    uint8_t err[] = { 0xFFu, RESP_NFC_ENDPOINT, 0xFFu, 0x04u };
+    uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_UNKNOWN_SUBCMD };
     pipe_send(connection, err, sizeof(err));
   }
 }
@@ -1106,22 +1106,32 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
       break;
     case CMD_ENTER_DFU:
       {
-        uint8_t ok[] = { 0x00u, RESP_ENTER_DFU };
+        uint8_t ok[] = { RESP_ACK, RESP_ENTER_DFU };
         pipe_send(connection, ok, sizeof(ok));
       }
       opendisplay_ble_schedule_dfu();
       break;
+    case CMD_POWER_OFF:
+      {
+        /* Canonical 2.1 puts power-off on 0x52 (deep-sleep moved to 0x53).
+         * Silabs has no power-latch hardware, so report it unsupported rather
+         * than fall through silently: {0xFF, 0x52, err, 0x00} with
+         * OD_ERR_POWER_OFF_UNSUPPORTED (0x00). */
+        uint8_t nack[] = { RESP_NACK, RESP_POWER_OFF, OD_ERR_POWER_OFF_UNSUPPORTED, 0x00u };
+        pipe_send(connection, nack, sizeof(nack));
+      }
+      break;
     case CMD_DEEP_SLEEP:
       {
-        uint8_t ok[] = { 0x00u, RESP_DEEP_SLEEP };
+        uint8_t ok[] = { RESP_ACK, RESP_DEEP_SLEEP };
         pipe_send(connection, ok, sizeof(ok));
       }
       opendisplay_ble_schedule_deep_sleep();
       break;
     case CMD_LED_ACTIVATE: {
-      uint8_t ok[] = { 0x00u, RESP_LED_ACTIVATE_ACK, 0x00u, 0x00u };
-      uint8_t e1[] = { 0xFFu, RESP_LED_ACTIVATE_ACK, 0x01u, 0x00u };
-      uint8_t e2[] = { 0xFFu, RESP_LED_ACTIVATE_ACK, 0x02u, 0x00u };
+      uint8_t ok[] = { RESP_ACK, RESP_LED_ACTIVATE_ACK, 0x00u, 0x00u };
+      uint8_t e1[] = { RESP_NACK, RESP_LED_ACTIVATE_ACK, 0x01u, 0x00u };
+      uint8_t e2[] = { RESP_NACK, RESP_LED_ACTIVATE_ACK, 0x02u, 0x00u };
 
       if (payload_len < 1u) {
         pipe_send(connection, e1, sizeof(e1));
@@ -1136,8 +1146,8 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
       break;
     }
     case CMD_LED_STOP: {
-      uint8_t ok[] = { 0x00u, RESP_LED_STOP_ACK, 0x00u, 0x00u };
-      uint8_t e2[] = { 0xFFu, RESP_LED_STOP_ACK, 0x02u, 0x00u };
+      uint8_t ok[] = { RESP_ACK, RESP_LED_STOP_ACK, 0x00u, 0x00u };
+      uint8_t e2[] = { RESP_NACK, RESP_LED_STOP_ACK, 0x02u, 0x00u };
       int rc;
 
       if (payload_len >= 1u) {
@@ -1164,8 +1174,8 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
     case CMD_DIRECT_WRITE_END:
       handle_direct_write_end(connection, payload, payload_len);
       break;
-    case CMD_DIRECT_WRITE_PARTIAL_START:
-    case CMD_BUZZER_ACTIVATE: {
+    case CMD_PARTIAL_WRITE_START:
+    case CMD_BUZZER: {
       /* Not implemented on Silabs, but the client sends these and blocks
        * waiting for a reply. Emit a NACK so it fails fast instead of timing
        * out: {0xFF, cmd_low, err, 0x00} matches the client's parse_nack()

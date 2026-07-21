@@ -1,7 +1,7 @@
 #include "opendisplay_led.h"
 #include "opendisplay_ble.h"
 #include "opendisplay_constants.h"
-#include "opendisplay_structs.h"
+#include "opendisplay_runtime.h"
 #include "em_cmu.h"
 #include "em_gpio.h"
 #include "sl_sleeptimer.h"

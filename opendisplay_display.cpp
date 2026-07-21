@@ -4,7 +4,7 @@
 #include "opendisplay_config_parser.h"
 #include "opendisplay_constants.h"
 #include "opendisplay_epd_map.h"
-#include "opendisplay_structs.h"
+#include "opendisplay_runtime.h"
 #include "bb_epaper.h"
 #include "em_cmu.h"
 #include "em_gpio.h"
@@ -59,7 +59,7 @@ static bool decode_pin(uint8_t v, GPIO_Port_TypeDef *port_out, uint8_t *pin_out)
 {
   unsigned pr;
   unsigned pn;
-  if (v == 0xFFu) {
+  if (v == GPIO_PIN_UNUSED) {
     return false;
   }
   pr = (unsigned)(v >> 4) & 0x0Fu;
@@ -113,7 +113,7 @@ static void display_power_set(bool on)
     opendisplay_display_park_pins();
   }
   p = cfg->system_config.pwr_pin;
-  if (p == 0xFFu) {
+  if (p == GPIO_PIN_UNUSED) {
     p = OD_FALLBACK_DISPLAY_PWR_PIN;
   }
   if (!decode_pin(p, &port, &pin)) {
@@ -382,7 +382,7 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
   h = (uint16_t)epd.height();
 
   memset(payload, 0, sizeof(payload));
-  tag_type = dc->tag_type;
+  tag_type = dc->legacy_tag_type;
   payload[0] = (uint8_t)((tag_type >> 8) & 0xFFu);
   payload[1] = (uint8_t)(tag_type & 0xFFu);
   uid = SYSTEM_GetUnique();
