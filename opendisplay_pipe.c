@@ -947,7 +947,10 @@ static void handle_nfc_endpoint(uint8_t connection, const uint8_t *payload, uint
     }
     rec_type = payload[1];
     text_len = (uint16_t)(((uint16_t)payload[2] << 8) | payload[3]);
-    if ((uint16_t)(4u + text_len) > payload_len) {
+    /* Compare in 32-bit: (uint16_t)(4 + text_len) would wrap for text_len
+     * >= 0xFFFC, letting an attacker declare a huge length in a tiny frame and
+     * pass this bound check (CWE-190 -> OOB read/write in the write sink). */
+    if ((uint32_t)text_len + 4u > payload_len) {
       uint8_t err[] = { RESP_NACK, RESP_NFC_ENDPOINT, 0xFFu, NFC_ERR_MALFORMED };
       pipe_send(connection, err, sizeof(err));
       return;
