@@ -72,7 +72,8 @@ Usage: $0 [options]
        RTT_BACKEND (gdbserver | exe, default gdbserver), RTT_GDBSERVER_ARGS,
        RTT_TELNET_PORT (default 19021), RTT_ARGS (extra args for JLinkRTTClient).
        Optional CMake (-D) when set: OPENDISPLAY_BUILD_ID, OD_APP_VERSION,
-       OD_SL_APPLICATION_VERSION, OD_GENERATE_GBL_OTA, OD_TNB132M_BOOT_PROBE, OD_TNB132M_WRITE_NDEF, OD_TNB132M_NDEF_TEXT
+       OD_FW_VERSION, OD_SL_APPLICATION_VERSION, OD_GENERATE_GBL_OTA,
+       OD_TNB132M_BOOT_PROBE, OD_TNB132M_WRITE_NDEF, OD_TNB132M_NDEF_TEXT
 
   Default RTT_BACKEND=gdbserver: JLinkGDBServer stays connected (J-Link Commander often exits and breaks exe mode).
   If Commander stays open on your setup, try RTT_BACKEND=exe (JLinkExe + sleep infinity) instead.
@@ -505,6 +506,7 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
   fi
   [[ -n "${OPENDISPLAY_BUILD_ID:-}" ]] && cfg+=(-DOPENDISPLAY_BUILD_ID="${OPENDISPLAY_BUILD_ID}")
   [[ -n "${OD_APP_VERSION:-}" ]] && cfg+=(-DOD_APP_VERSION="${OD_APP_VERSION}")
+  [[ -n "${OD_FW_VERSION:-}" ]] && cfg+=(-DOD_FW_VERSION="${OD_FW_VERSION}")
   [[ -n "${OD_SL_APPLICATION_VERSION:-}" ]] && cfg+=(-DOD_SL_APPLICATION_VERSION="${OD_SL_APPLICATION_VERSION}")
   [[ -n "${OD_GENERATE_GBL_OTA:-}" ]] && cfg+=(-DOD_GENERATE_GBL_OTA="${OD_GENERATE_GBL_OTA}")
   (cd "$CMAKE_DIR" && cmake "${cfg[@]}" && cmake --build --preset default_config)

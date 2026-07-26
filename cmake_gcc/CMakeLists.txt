@@ -14,7 +14,8 @@ option(OD_TNB132M_BOOT_PROBE "At boot read TNB132M NDEF via Type-3 AI@0x48 + dat
 option(OD_TNB132M_WRITE_NDEF "With BOOT_PROBE: before the read, write OD_TNB132M_NDEF_TEXT as a Text record" OFF)
 set(OD_TNB132M_NDEF_TEXT "OpenDisplay" CACHE STRING "UTF-8 text (lang=en) written when OD_TNB132M_WRITE_NDEF=ON; max 25 chars")
 
-set(OD_APP_VERSION "0x0019" CACHE STRING "16-bit BLE app version (hex, high byte=major, low=minor)")
+set(OD_APP_VERSION "0x0019" CACHE STRING "16-bit BLE app version (hex, high byte=major, low=minor); ignored when OD_FW_VERSION is set")
+set(OD_FW_VERSION "" CACHE STRING "App version string major.minor[.patch] (optional leading v); drives BLE 0x43 + boot screen")
 set(OPENDISPLAY_BUILD_ID "bg22-dev" CACHE STRING "Firmware version string (GATT 0x0043 / build id)")
 set(OD_SL_APPLICATION_VERSION "" CACHE STRING "If set, overrides SL_APPLICATION_VERSION (decimal uint32)")
 
@@ -32,6 +33,11 @@ target_compile_definitions(slc PUBLIC
 	"OD_APP_VERSION=${OD_APP_VERSION}"
 	"OPENDISPLAY_BUILD_ID=\"${OPENDISPLAY_BUILD_ID}\""
 )
+
+if(NOT "${OD_FW_VERSION}" STREQUAL "")
+  target_compile_definitions(slc PUBLIC "OD_FW_VERSION=\"${OD_FW_VERSION}\"")
+  message(STATUS "OpenDisplay FW version: ${OD_FW_VERSION}")
+endif()
 
 if(NOT "${OD_SL_APPLICATION_VERSION}" STREQUAL "")
   target_compile_definitions(slc PUBLIC "SL_APPLICATION_VERSION=${OD_SL_APPLICATION_VERSION}u")

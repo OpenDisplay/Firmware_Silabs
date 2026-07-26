@@ -368,7 +368,7 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
   bool qr_right;
   int qr_x, qr_y, avail_w, text_y;
   char name_line[16];
-  char fw_line[16];
+  char fw_line[20];
   const char *domain_line = "OPENDISPLAY.ORG";
   char key_hex[33];
   char k1[17], k2[17];
@@ -417,8 +417,9 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
   (void)snprintf(name_line, sizeof(name_line), "OD%06lX", (unsigned long)last3);
   {
     uint16_t ver = opendisplay_ble_get_app_version();
-    (void)snprintf(fw_line, sizeof(fw_line), "FW:S %u.%u",
-                   (unsigned)((ver >> 8) & 0xFFu), (unsigned)(ver & 0xFFu));
+    (void)snprintf(fw_line, sizeof(fw_line), "FW:S %u.%u.%u",
+                   (unsigned)((ver >> 8) & 0xFFu), (unsigned)(ver & 0xFFu),
+                   (unsigned)opendisplay_ble_get_app_version_patch());
   }
   bytes_to_hex(key, sizeof(key), key_hex, sizeof(key_hex));
   memcpy(k1, key_hex, 16);

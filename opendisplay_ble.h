@@ -25,6 +25,7 @@ void opendisplay_ble_schedule_dfu(void);
 void opendisplay_ble_schedule_deep_sleep(void);
 
 uint16_t opendisplay_ble_get_app_version(void);
+uint8_t opendisplay_ble_get_app_version_patch(void);
 
 void opendisplay_ble_copy_msd_bytes(uint8_t out[16]);
 

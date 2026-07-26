@@ -64,29 +64,28 @@ jobs:
           set -euo pipefail
           TAG="${{ github.event.release.tag_name }}"
           VERSION="${TAG#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          if [[ "${VERSION}" == *.* ]]; then
-            MINOR=$(echo "$VERSION" | cut -d. -f2)
-            [[ -z "${MINOR}" ]] && MINOR=0
-          else
-            MINOR=0
-          fi
-          if ! [[ "${MAJOR}" =~ ^[0-9]+$ && "${MINOR}" =~ ^[0-9]+$ ]]; then
-            echo "Tag must look like vMAJOR.MINOR (e.g. v1.4). Got: ${TAG}"
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "Tag must look like MAJOR.MINOR or MAJOR.MINOR.PATCH (optional leading v). Got: ${TAG}"
             exit 1
           fi
-          if (( MAJOR > 255 || MINOR > 255 )); then
-            echo "MAJOR and MINOR must be 0..255"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+          [[ -z "${PATCH}" ]] && PATCH=0
+          if (( MAJOR > 255 || MINOR > 255 || PATCH > 255 )); then
+            echo "MAJOR, MINOR, and PATCH must be 0..255"
             exit 1
           fi
           APPVER=$(printf '0x%02x%02x' "${MAJOR}" "${MINOR}")
           SLVER=$(( (MAJOR << 8) | MINOR ))
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "major=${MAJOR}" >> "${GITHUB_OUTPUT}"
           echo "minor=${MINOR}" >> "${GITHUB_OUTPUT}"
+          echo "patch=${PATCH}" >> "${GITHUB_OUTPUT}"
           echo "appver=${APPVER}" >> "${GITHUB_OUTPUT}"
           echo "slver=${SLVER}" >> "${GITHUB_OUTPUT}"
-          echo "Parsed ${TAG} -> OD_APP_VERSION=${APPVER} SL_APPLICATION_VERSION=${SLVER}"
+          echo "Parsed ${TAG} -> ${MAJOR}.${MINOR}.${PATCH} OD_APP_VERSION=${APPVER} SL_APPLICATION_VERSION=${SLVER}"
 
       - name: Configure and build (version baked into firmware)
         working-directory: ${{ github.workspace }}
@@ -95,6 +94,7 @@ jobs:
           NINJA_EXE_PATH: /usr/bin/ninja
           OD_GENERATE_GBL_OTA: "OFF"
           OD_APP_VERSION: ${{ steps.ver.outputs.appver }}
+          OD_FW_VERSION: ${{ steps.ver.outputs.tag }}
           OD_SL_APPLICATION_VERSION: ${{ steps.ver.outputs.slver }}
         run: |
           set -euo pipefail

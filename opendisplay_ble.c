@@ -22,9 +22,121 @@
 #define OPENDISPLAY_COMPANY_ID 0x2446u
 #define MSD_PAYLOAD_LEN        16u
 #define OD_NAME_PREFIX         "OD"
+#ifndef OD_FW_VERSION
+#define OD_FW_VERSION ""
+#endif
 #ifndef OD_APP_VERSION
 #define OD_APP_VERSION         0x0100u
 #endif
+
+static const char *fw_build_version_string(void)
+{
+  const char *v = OD_FW_VERSION;
+
+  if (v == NULL || v[0] == '\0') {
+    return NULL;
+  }
+  if (v[0] == '"') {
+    v++;
+  }
+  if (v[0] == '\0') {
+    return NULL;
+  }
+  return v;
+}
+
+static uint8_t fw_major_from_build_version(void)
+{
+  const char *v = fw_build_version_string();
+
+  if (v == NULL) {
+    return 0;
+  }
+  while (*v == ' ' || *v == 'v' || *v == 'V') {
+    v++;
+  }
+  if (*v < '0' || *v > '9') {
+    return 0;
+  }
+  unsigned maj = 0U;
+  while (*v >= '0' && *v <= '9') {
+    maj = maj * 10U + (unsigned)(*v - '0');
+    v++;
+  }
+  if (maj > 255U) {
+    maj = 255U;
+  }
+  return (uint8_t)maj;
+}
+
+static uint8_t fw_minor_from_build_version(void)
+{
+  const char *v = fw_build_version_string();
+
+  if (v == NULL) {
+    return 0;
+  }
+  while (*v == ' ' || *v == 'v' || *v == 'V') {
+    v++;
+  }
+  while (*v >= '0' && *v <= '9') {
+    v++;
+  }
+  if (*v != '.') {
+    return 0;
+  }
+  v++;
+  if (*v < '0' || *v > '9') {
+    return 0;
+  }
+  unsigned min = 0U;
+  while (*v >= '0' && *v <= '9') {
+    min = min * 10U + (unsigned)(*v - '0');
+    v++;
+  }
+  if (min > 255U) {
+    min = 255U;
+  }
+  return (uint8_t)min;
+}
+
+static uint8_t fw_patch_from_build_version(void)
+{
+  const char *v = fw_build_version_string();
+
+  if (v == NULL) {
+    return 0;
+  }
+  while (*v == ' ' || *v == 'v' || *v == 'V') {
+    v++;
+  }
+  while (*v >= '0' && *v <= '9') {
+    v++;
+  }
+  if (*v != '.') {
+    return 0;
+  }
+  v++;
+  while (*v >= '0' && *v <= '9') {
+    v++;
+  }
+  if (*v != '.') {
+    return 0;
+  }
+  v++;
+  if (*v < '0' || *v > '9') {
+    return 0;
+  }
+  unsigned patch = 0U;
+  while (*v >= '0' && *v <= '9') {
+    patch = patch * 10U + (unsigned)(*v - '0');
+    v++;
+  }
+  if (patch > 255U) {
+    patch = 255U;
+  }
+  return (uint8_t)patch;
+}
 
 /* BLE adv interval in units of 0.625 ms (used when not connected / undirected adv). */
 #define OD_ADV_INTERVAL_IDLE_SLOTS 1600u
@@ -1932,7 +2044,19 @@ void opendisplay_ble_process(void)
 
 uint16_t opendisplay_ble_get_app_version(void)
 {
+  if (fw_build_version_string() != NULL) {
+    return ((uint16_t)fw_major_from_build_version() << 8) |
+           fw_minor_from_build_version();
+  }
   return (uint16_t)OD_APP_VERSION;
+}
+
+uint8_t opendisplay_ble_get_app_version_patch(void)
+{
+  if (fw_build_version_string() != NULL) {
+    return fw_patch_from_build_version();
+  }
+  return 0;
 }
 
 void opendisplay_ble_copy_msd_bytes(uint8_t out[16])
