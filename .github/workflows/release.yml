@@ -1,8 +1,26 @@
 name: Firmware BG22 Release
 
 on:
+  # Called by release-please.yml once it has created a release. Needed because a
+  # release created with GITHUB_TOKEN does not emit a release event at all.
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to build"
+        required: true
+        type: string
+  # `published`, not `created`: both fire for an ordinary release, but `created`
+  # never fires for a draft, nor when a draft is later published — so it would
+  # silently skip the "write the release notes as a draft, then publish" flow.
   release:
-    types: [created]
+    types: [published]
+  # Recovery path: re-run the build for an existing tag without republishing it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,9 +33,14 @@ defaults:
 jobs:
   build-and-attach:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Under workflow_call the default ref is the caller's (main), not the
+          # tag being released.
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
 
       - name: Install toolchain
         run: |
@@ -27,7 +50,19 @@ jobs:
             libnewlib-arm-none-eabi libstdc++-arm-none-eabi-dev \
             libstdc++-arm-none-eabi-newlib
 
+      # The Commander zip is a large download from silabs.com on every run, at an
+      # unversioned URL. Caching the extracted CLI both speeds the build up and
+      # stops an upstream refresh from silently changing the tool mid-release.
+      # Bump the key suffix to deliberately pick up a newer Commander.
+      - name: Cache Simplicity Commander
+        id: cache-commander
+        uses: actions/cache@v4
+        with:
+          path: /tmp/sl_cli
+          key: ${{ runner.os }}-${{ runner.arch }}-commander-v1
+
       - name: Install Simplicity Commander (OTA .gbl)
+        if: steps.cache-commander.outputs.cache-hit != 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -49,7 +84,15 @@ jobs:
           fi
           mkdir -p /tmp/sl_cli
           tar xjf "${tb[0]}" -C /tmp/sl_cli
-          bin=$(find /tmp/sl_cli -type f -name commander-cli -executable | head -n1)
+
+      # Separate from the install step above, which is skipped on a cache hit —
+      # COMMANDER has to be resolved either way.
+      - name: Resolve commander-cli
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends libusb-1.0-0
+          bin=$(find /tmp/sl_cli -type f -name commander-cli -perm -u+x | head -n1)
           if [[ -z "${bin}" || ! -x "${bin}" ]]; then
             echo "commander-cli not found under /tmp/sl_cli" >&2
             find /tmp/sl_cli -type f 2>/dev/null | head -40 >&2 || true
@@ -62,7 +105,7 @@ jobs:
         id: ver
         run: |
           set -euo pipefail
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ inputs.tag || github.event.release.tag_name }}"
           VERSION="${TAG#v}"
           if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
             echo "Tag must look like MAJOR.MINOR or MAJOR.MINOR.PATCH (optional leading v). Got: ${TAG}"
@@ -128,7 +171,7 @@ jobs:
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ inputs.tag || github.event.release.tag_name }}
           files: ${{ steps.stage.outputs.release_files }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
