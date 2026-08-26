@@ -348,7 +348,8 @@ enum ConfigPacketType {
     OD_PKT_BUZZER         = 0x29, /**< @doc "buzzer (repeatable, max 4). Canonical name is BUZZER (matches Silabs), resolving the Silabs BUZZER vs NRF54/yaml PASSIVE_BUZZER split; config.yaml's packet name (passive_buzzer) is regenerated to buzzer." */
     OD_PKT_NFC            = 0x2A, /**< @doc "nfc_config (repeatable, max 2)" */
     OD_PKT_FLASH          = 0x2B, /**< @doc "flash_config (repeatable, max 2)" */
-    OD_PKT_DATA_EXTENDED  = 0x2C  /**< @doc "data_extended (singleton)" */
+    OD_PKT_DATA_EXTENDED  = 0x2C, /**< @doc "data_extended (singleton)" */
+    OD_PKT_FINDMY         = 0x2D  /**< @doc "findmy_config (singleton)" */
 };
 
 /* ==========================================================================
@@ -1073,6 +1074,39 @@ struct DataExtended {
     uint8_t custom_string_3[32];   /**< @doc "user-defined string 3." */
 } __attribute__((packed));
 OD_STATIC_ASSERT(sizeof(struct DataExtended) == 288, "DataExtended wire size");
+
+/* -----------------------------------------------------------------------
+ * 0x2D  findmy_config
+ * ----------------------------------------------------------------------- */
+
+/** @enum FindMyCurve  @width 1  @doc "FMDN EID curve selector (FindMyConfig.fmdn_curve)." */
+enum FindMyCurve {
+    OD_FINDMY_CURVE_SECP160R1 = 0, /**< @doc "20-byte static EID (GoogleFindMyTools / legacy AD). Uses advertisement_key." */
+    OD_FINDMY_CURVE_SECP256R1 = 1  /**< @doc "32-byte rotating EID on SECP256R1 (extended AD; not used by GFT)." */
+};
+
+/* FindMyConfig.flags @bits FindMyFlags (bits 2-7 reserved). */
+#define OD_FINDMY_FLAG_FMDN_ENABLE   (1u << 0) /* @doc "enable Google Find My Device Network advertising." */
+#define OD_FINDMY_FLAG_APPLE_ENABLE  (1u << 1) /* @doc "reserved for future Apple Find My advertising support." */
+
+/** @struct FindMyConfig  @packet 0x2D
+ *  @doc "Find My provisioning blob. Singleton. 128 bytes. For GoogleFindMyTools
+ *  compatibility use fmdn_curve=secp160r1 with advertisement_key=generate_eid(eik,0)
+ *  (static beacon_counter=0). SECP256R1 rotates from eik+time_base on-device.
+ *  Apple fields are reserved for a later P-224 phase. Reserved bytes must be zero." */
+struct FindMyConfig {
+    uint8_t flags;                   /**< @bits FindMyFlags @doc "enable flags; bits 2-7 reserved." */
+    uint8_t fmdn_k;                  /**< @doc "FMDN rotation-period exponent K (use 10 for GFT)." */
+    uint8_t fmdn_curve;              /**< @enum FindMyCurve @doc "FMDN EID curve selector." */
+    uint8_t reserved0[5];            /**< @reserved @doc "must be 0; pads the control header to 8 bytes." */
+    uint8_t eik[32];                 /**< @doc "Google FMDN Ephemeral Identity Key (32 bytes)." */
+    uint8_t apple_master_secret[28]; /**< @doc "reserved for future Apple P-224 seed material; write all zeros for now." */
+    uint32_t time_base_unix;         /**< @endian le @unit s @doc "Unix epoch for SECP256R1 rotation; unused for static SECP160 (write 0)." */
+    uint32_t apple_time_base;        /**< @endian le @unit s @doc "reserved for future Apple rotation epoch; write 0 for now." */
+    uint8_t advertisement_key[20];   /**< @doc "Static 20-byte SECP160 EID for GFT (generate_eid(eik,0)); zero when unused." */
+    uint8_t reserved1[32];           /**< @reserved @doc "must be 0; reserved for future FMDN/Apple extensions." */
+} __attribute__((packed));
+OD_STATIC_ASSERT(sizeof(struct FindMyConfig) == 128, "FindMyConfig wire size");
 
 /* ==========================================================================
  * SECTION 5 -- MESSAGE PAYLOAD STRUCTS  (fixed-size opcode payloads)

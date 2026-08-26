@@ -39,7 +39,7 @@
 // <i> Specifically, if the component "bluetooth_feature_periodic_advertiser" is used, its configuration SL_BT_CONFIG_MAX_PERIODIC_ADVERTISERS specifies how many of the SL_BT_CONFIG_USER_ADVERTISERS advertising sets are capable of periodic advertising. Similarly, if the component bluetooth_feature_pawr_advertiser is used, its configuration SL_BT_CONFIG_MAX_PAWR_ADVERTISERS specifies how many of the periodic advertising sets are capable of Periodic Advertising with Responses.
 // <i>
 // <i> The configuration values must satisfy the condition SL_BT_CONFIG_USER_ADVERTISERS >= SL_BT_CONFIG_MAX_PERIODIC_ADVERTISERS >= SL_BT_CONFIG_MAX_PAWR_ADVERTISERS.
-#define SL_BT_CONFIG_USER_ADVERTISERS     (1)
+#define SL_BT_CONFIG_USER_ADVERTISERS     (2)
 // <<< end of configuration section >>>
 
 #endif
