@@ -173,6 +173,7 @@ add_library(slc OBJECT
     "../${COPIED_SDK_PATH}/security_se_manager/platform/security/sl_component/se_manager/src/sli_se_manager_mailbox.c"
     "../app.c"
     "../opendisplay_ble.c"
+    "../opendisplay_apple_findmy.c"
     "../opendisplay_pipe.c"
     "../opendisplay_config_storage.c"
     "../opendisplay_config_parser.c"

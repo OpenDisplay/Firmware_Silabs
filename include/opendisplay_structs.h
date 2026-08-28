@@ -1087,22 +1087,24 @@ enum FindMyCurve {
 
 /* FindMyConfig.flags @bits FindMyFlags (bits 2-7 reserved). */
 #define OD_FINDMY_FLAG_FMDN_ENABLE   (1u << 0) /* @doc "enable Google Find My Device Network advertising." */
-#define OD_FINDMY_FLAG_APPLE_ENABLE  (1u << 1) /* @doc "reserved for future Apple Find My advertising support." */
+#define OD_FINDMY_FLAG_APPLE_ENABLE  (1u << 1) /* @doc "enable Apple OpenHaystack / Offline Finding advertising." */
 
 /** @struct FindMyConfig  @packet 0x2D
  *  @doc "Find My provisioning blob. Singleton. 128 bytes. For GoogleFindMyTools
  *  compatibility use fmdn_curve=secp160r1 with advertisement_key=generate_eid(eik,0)
  *  (static beacon_counter=0). SECP256R1 rotates from eik+time_base on-device.
- *  Apple fields are reserved for a later P-224 phase. Reserved bytes must be zero." */
+ *  For Apple OpenHaystack set apple_enable and apple_master_secret to the 28-byte
+ *  P-224 advertisement public key X (MaclessHaystack Advertisement key, base64-decoded).
+ *  apple_time_base stays 0 (static mode, no on-device rotation). Reserved bytes must be zero." */
 struct FindMyConfig {
     uint8_t flags;                   /**< @bits FindMyFlags @doc "enable flags; bits 2-7 reserved." */
     uint8_t fmdn_k;                  /**< @doc "FMDN rotation-period exponent K (use 10 for GFT)." */
     uint8_t fmdn_curve;              /**< @enum FindMyCurve @doc "FMDN EID curve selector." */
     uint8_t reserved0[5];            /**< @reserved @doc "must be 0; pads the control header to 8 bytes." */
     uint8_t eik[32];                 /**< @doc "Google FMDN Ephemeral Identity Key (32 bytes)." */
-    uint8_t apple_master_secret[28]; /**< @doc "reserved for future Apple P-224 seed material; write all zeros for now." */
+    uint8_t apple_master_secret[28]; /**< @doc "Apple OpenHaystack 28-byte advertisement public key X (not the private key)." */
     uint32_t time_base_unix;         /**< @endian le @unit s @doc "Unix epoch for SECP256R1 rotation; unused for static SECP160 (write 0)." */
-    uint32_t apple_time_base;        /**< @endian le @unit s @doc "reserved for future Apple rotation epoch; write 0 for now." */
+    uint32_t apple_time_base;        /**< @endian le @unit s @doc "unused in static Apple mode; write 0." */
     uint8_t advertisement_key[20];   /**< @doc "Static 20-byte SECP160 EID for GFT (generate_eid(eik,0)); zero when unused." */
     uint8_t reserved1[32];           /**< @reserved @doc "must be 0; reserved for future FMDN/Apple extensions." */
 } __attribute__((packed));

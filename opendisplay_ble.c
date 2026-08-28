@@ -1,4 +1,5 @@
 #include "opendisplay_ble.h"
+#include "opendisplay_apple_findmy.h"
 #include "opendisplay_config_parser.h"
 #include "opendisplay_display.h"
 #include "opendisplay_led.h"
@@ -195,6 +196,7 @@ static uint16_t g_od_pipe_char;
 static uint8_t g_connection = 0xFFu;
 static uint8_t s_adv_handle = 0xFFu;
 static uint8_t s_fmdn_adv_handle = 0xFFu;
+static uint8_t s_apple_adv_handle = 0xFFu;
 static char s_dev_name[16];
 static struct GlobalConfig s_od_global_config;
 static uint32_t s_last_msd_refresh_ms;
@@ -1635,7 +1637,12 @@ void opendisplay_ble_reload_config_from_nvm(void)
   opendisplay_display_park_pins();
   opendisplay_led_init();
   opendisplay_display_boot_apply();
+  od_apple_stop(s_apple_adv_handle);
   od_fmdn_sync(sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count()));
+  if (s_od_global_config.loaded && s_od_global_config.has_findmy_config
+      && od_apple_config_active(&s_od_global_config.findmy_config)) {
+    od_apple_sync(s_apple_adv_handle, &s_od_global_config.findmy_config);
+  }
 }
 
 static void od_apply_advertising_timing(uint8_t adv_handle, uint32_t now_ms)
@@ -1994,28 +2001,19 @@ static bool od_fmdn_compute_eid256(const struct FindMyConfig *cfg,
   return ok;
 }
 
-/* Identity MAC + 1 as a static random address so FMDN is a distinct nRF Connect row. */
-static bool od_fmdn_apply_identity_plus_one(uint8_t adv_set)
+/* Static random addr from key[0..5]|0xC0 (same layout as OpenHaystack / Apple). */
+static bool od_fmdn_apply_address_from_key(uint8_t adv_set, const uint8_t key[6])
 {
   bd_addr addr = { { 0 } };
   bd_addr applied = { { 0 } };
-  uint8_t addr_type = 0u;
-  unsigned carry = 1u;
-  unsigned i;
   sl_status_t sc;
 
-  sc = sl_bt_gap_get_identity_address(&addr, &addr_type);
-  if (sc != SL_STATUS_OK) {
-    printf("[OD][FMDN] get_identity_address sc=0x%04lX\r\n", (unsigned long)sc);
-    return false;
-  }
-  for (i = 0u; i < sizeof(addr.addr); i++) {
-    unsigned sum = (unsigned)addr.addr[i] + carry;
-    addr.addr[i] = (uint8_t)sum;
-    carry = sum >> 8;
-  }
-  /* Static random requires MSB type bits 11. */
-  addr.addr[5] |= 0xC0u;
+  addr.addr[5] = (uint8_t)(key[0] | 0xC0u);
+  addr.addr[4] = key[1];
+  addr.addr[3] = key[2];
+  addr.addr[2] = key[3];
+  addr.addr[1] = key[4];
+  addr.addr[0] = key[5];
 
   sc = sl_bt_advertiser_set_random_address(adv_set,
                                            sl_bt_gap_static_address,
@@ -2025,7 +2023,7 @@ static bool od_fmdn_apply_identity_plus_one(uint8_t adv_set)
     printf("[OD][FMDN] set_random_address sc=0x%04lX\r\n", (unsigned long)sc);
     return false;
   }
-  printf("[OD][FMDN] addr %02X:%02X:%02X:%02X:%02X:%02X (identity+1 static)\r\n",
+  printf("[OD][FMDN] addr %02X:%02X:%02X:%02X:%02X:%02X (advertisement key)\r\n",
          applied.addr[5], applied.addr[4], applied.addr[3],
          applied.addr[2], applied.addr[1], applied.addr[0]);
   return true;
@@ -2057,7 +2055,7 @@ static bool od_fmdn_build_and_apply_adv(uint8_t adv_set,
     window_counter = 0u;
     memcpy(eid, cfg->advertisement_key, OD_FMDN_EID_LEN_160);
 
-    if (!od_fmdn_apply_identity_plus_one(adv_set)) {
+    if (!od_fmdn_apply_address_from_key(adv_set, cfg->advertisement_key)) {
       return false;
     }
 
@@ -2108,7 +2106,7 @@ static bool od_fmdn_build_and_apply_adv(uint8_t adv_set,
   if (!od_fmdn_compute_eid256(cfg, window_counter, eid, &hashed_flags)) {
     return false;
   }
-  if (!od_fmdn_apply_identity_plus_one(adv_set)) {
+  if (!od_fmdn_apply_address_from_key(adv_set, cfg->eik)) {
     return false;
   }
 
@@ -2426,7 +2424,9 @@ static void build_and_apply_adv(uint8_t adv_set, const char *name, bool quick)
   app_assert_status(sc);
 }
 
-void opendisplay_ble_on_boot(uint8_t advertising_set_handle, uint8_t fmdn_advertising_set_handle)
+void opendisplay_ble_on_boot(uint8_t advertising_set_handle,
+                             uint8_t fmdn_advertising_set_handle,
+                             uint8_t apple_advertising_set_handle)
 {
   char hex[7];
   sl_status_t sc;
@@ -2448,14 +2448,16 @@ void opendisplay_ble_on_boot(uint8_t advertising_set_handle, uint8_t fmdn_advert
 
   s_adv_handle = advertising_set_handle;
   s_fmdn_adv_handle = fmdn_advertising_set_handle;
+  s_apple_adv_handle = apple_advertising_set_handle;
   s_fmdn_adv_started = false;
   s_fmdn_supported_curve = true;
   s_fmdn_use_legacy = false;
   s_fmdn_last_window = UINT32_MAX;
   s_fmdn_last_batt_code = 0xFFu;
-  printf("[OD] BLE boot: adv_set=%u fmdn_adv_set=%u\r\n",
+  printf("[OD] BLE boot: adv_set=%u fmdn_adv_set=%u apple_adv_set=%u\r\n",
          (unsigned)advertising_set_handle,
-         (unsigned)fmdn_advertising_set_handle);
+         (unsigned)fmdn_advertising_set_handle,
+         (unsigned)apple_advertising_set_handle);
 
   chip_id_hex6(hex);
   snprintf(s_dev_name, sizeof(s_dev_name), "%s%s", OD_NAME_PREFIX, hex);
@@ -2498,6 +2500,10 @@ void opendisplay_ble_on_boot(uint8_t advertising_set_handle, uint8_t fmdn_advert
   app_assert_status(sc);
   printf("[OD] advertising started (~1 s interval while idle)\r\n");
   od_fmdn_sync(sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count()));
+  if (s_od_global_config.loaded && s_od_global_config.has_findmy_config
+      && od_apple_config_active(&s_od_global_config.findmy_config)) {
+    od_apple_sync(s_apple_adv_handle, &s_od_global_config.findmy_config);
+  }
 }
 
 void opendisplay_ble_restart_advertising(uint8_t advertising_set_handle)
@@ -2575,7 +2581,10 @@ void opendisplay_ble_process(void)
       build_and_apply_adv(s_adv_handle, s_dev_name, false);
     }
   }
-  od_fmdn_sync(now_ms);
+  if (s_od_global_config.loaded && s_od_global_config.has_findmy_config) {
+    od_fmdn_sync(now_ms);
+    od_apple_sync(s_apple_adv_handle, &s_od_global_config.findmy_config);
+  }
   if (g_connection != 0xFFu
       && !s_connection_timeout_close_requested
       && (now_ms - s_connection_open_ms) >= OD_MAX_CONNECTION_MS) {
