@@ -22,6 +22,7 @@
 #define CONFIG_PKT_NFC            0x2A
 #define CONFIG_PKT_FLASH          0x2B
 #define CONFIG_PKT_DATA_EXTENDED  0x2C
+#define CONFIG_PKT_FINDMY         0x2D
 
 /* Wire sizes of config packets Silabs does not consume itself (touch/buzzer are
  * handled by the main MCU, data_extended is host-only). They must still be
@@ -29,6 +30,7 @@
 #define CONFIG_PKT_TOUCH_SIZE          32
 #define CONFIG_PKT_BUZZER_SIZE         32
 #define CONFIG_PKT_DATA_EXTENDED_SIZE  288
+#define CONFIG_PKT_FINDMY_SIZE         128
 
 #define GPIO_PIN_UNUSED 0xFF
 

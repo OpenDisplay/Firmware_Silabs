@@ -35,6 +35,13 @@ NFC_WRITE_NDEF=0
 NFC_WRITE_NDEF_CLI=0
 NFC_NDEF_TEXT=""
 NFC_NDEF_TEXT_CLI=0
+DO_BLE_OTA=0
+BLE_OTA_NAME=""
+BLE_OTA_KEY=""
+BLE_OTA_SLOW=0
+BLE_OTA_ALREADY=0
+BLE_OTA_SCAN_TIMEOUT="${BLE_OTA_SCAN_TIMEOUT:-12}"
+BLE_OTA_APPLOADER_TIMEOUT="${BLE_OTA_APPLOADER_TIMEOUT:-45}"
 
 usage() {
   cat <<EOF
@@ -43,6 +50,12 @@ Usage: $0 [options]
   --no-build          Skip cmake build (flash existing artifact only)
   --no-flash          Build only
   --gbl-only          Only run Simplicity Commander gbl create (no build/flash; needs .s37)
+  --ble-ota NAME      Build .gbl and OTA over BLE to GAP name matching NAME (no programmer).
+                      Skips SWD flash. Uses silabs-ble-ota + scripts/ble_ota.py.
+                      Example: $0 --ble-ota ODDEE7
+  --ble-ota-key HEX   Optional 16-byte security master key if device encryption is on
+  --ble-ota-slow      Proxy-safe OTA (disable silabs-ble-ota fast= mode)
+  --ble-ota-already-in-ota  Device is already in AppLoader; skip CMD_ENTER_DFU
   --rtt               After flash: background J-Link RTT telnet + JLinkRTTClient
   --rtt-only          RTT only (no build/flash)
   --no-rtt            Build firmware with RTT disabled (OD_ENABLE_RTT=OFF)
@@ -70,13 +83,18 @@ Usage: $0 [options]
        DO_MASS_ERASE (set to 1 for recover-before-flash, same as --mass-erase),
        SWD_SPEED, JLINK_GDB_SERVER, JLINKEXE, JLINK_RTT_CLIENT,
        RTT_BACKEND (gdbserver | exe, default gdbserver), RTT_GDBSERVER_ARGS,
-       RTT_TELNET_PORT (default 19021), RTT_ARGS (extra args for JLinkRTTClient).
+       RTT_TELNET_PORT (default 19021), RTT_ARGS (extra args for JLinkRTTClient),
+       BLE_OTA_SCAN_TIMEOUT, BLE_OTA_APPLOADER_TIMEOUT, PYTHON (python3 binary for BLE OTA).
        Optional CMake (-D) when set: OPENDISPLAY_BUILD_ID, OD_APP_VERSION,
        OD_FW_VERSION, OD_SL_APPLICATION_VERSION, OD_GENERATE_GBL_OTA,
        OD_TNB132M_BOOT_PROBE, OD_TNB132M_WRITE_NDEF, OD_TNB132M_NDEF_TEXT
 
   Default RTT_BACKEND=gdbserver: JLinkGDBServer stays connected (J-Link Commander often exits and breaks exe mode).
   If Commander stays open on your setup, try RTT_BACKEND=exe (JLinkExe + sleep infinity) instead.
+
+  BLE OTA needs: pip install -r scripts/requirements-ble-ota.txt
+  (build-and-flash prefers Firmware_Silabs/.venv-ble-ota if present)
+  See https://github.com/OpenDisplay/silabs-ble-ota
 EOF
   exit 0
 }
@@ -86,6 +104,16 @@ while [[ $# -gt 0 ]]; do
     --no-build) DO_BUILD=0 ;;
     --no-flash) DO_FLASH=0 ;;
     --gbl-only) DO_BUILD=0; DO_FLASH=0; DO_GBL_ONLY=1 ;;
+    --ble-ota)
+      DO_BLE_OTA=1
+      DO_FLASH=0
+      DO_OTA_IMAGE=1
+      BLE_OTA_NAME="${2:?--ble-ota needs NAME (GAP name substring, e.g. ODDEE7)}"
+      shift
+      ;;
+    --ble-ota-key) BLE_OTA_KEY="${2:?}"; shift ;;
+    --ble-ota-slow) BLE_OTA_SLOW=1 ;;
+    --ble-ota-already-in-ota) BLE_OTA_ALREADY=1 ;;
     --rtt) DO_RTT=1 ;;
     --rtt-only) RTT_ONLY=1; DO_BUILD=0; DO_FLASH=0; DO_RTT=1 ;;
     --no-rtt) RTT_ENABLED=0 ;;
@@ -118,6 +146,7 @@ while [[ $# -gt 0 ]]; do
       DO_RTT=0
       RTT_ONLY=0
       DO_GBL_ONLY=0
+      DO_BLE_OTA=0
       ;;
     -h|--help) usage ;;
     *) echo "Unknown option: $1" >&2; usage ;;
@@ -560,10 +589,10 @@ elif [[ "$DO_BUILD" -eq 1 ]] && [[ "$DO_FLASH" -eq 0 ]]; then
   echo "==> Skipping flash (--no-flash)"
 fi
 
-if [[ "$DO_OTA_IMAGE" -eq 1 ]] && [[ "$DO_BUILD" -eq 1 || "$DO_FLASH" -eq 1 || "$DO_GBL_ONLY" -eq 1 ]]; then
+if [[ "$DO_OTA_IMAGE" -eq 1 ]] && [[ "$DO_BUILD" -eq 1 || "$DO_FLASH" -eq 1 || "$DO_GBL_ONLY" -eq 1 || "$DO_BLE_OTA" -eq 1 ]]; then
   APP_ART=$(find_artifact) || {
-    if [[ "$DO_GBL_ONLY" -eq 1 ]]; then
-      echo "ERROR: --gbl-only needs ${TARGET_NAME}.s37 or .hex under $CMAKE_DIR/build (build first)." >&2
+    if [[ "$DO_GBL_ONLY" -eq 1 || "$DO_BLE_OTA" -eq 1 ]]; then
+      echo "ERROR: need ${TARGET_NAME}.s37 or .hex under $CMAKE_DIR/build (build first)." >&2
       exit 1
     fi
     APP_ART=""
@@ -574,24 +603,71 @@ if [[ "$DO_OTA_IMAGE" -eq 1 ]] && [[ "$DO_BUILD" -eq 1 || "$DO_FLASH" -eq 1 || "
     APP_ART=""
   }
   if [[ -n "${APP_ART}" ]]; then
-    echo "==> OTA image: $CMD gbl create $OUT_GBL --app $APP_ART"
-    if "$CMD" gbl create "$OUT_GBL" --app "$APP_ART"; then
-      echo "==> OTA image generated: $OUT_GBL"
+    if [[ -f "$OUT_GBL" && "$DO_BUILD" -eq 0 && "$DO_BLE_OTA" -eq 1 ]]; then
+      echo "==> Reusing existing OTA image: $OUT_GBL"
     else
-      echo "WARN: OTA .gbl generation failed; continuing." >&2
-      if [[ "$DO_GBL_ONLY" -eq 1 ]]; then
-        exit 1
+      echo "==> OTA image: $CMD gbl create $OUT_GBL --app $APP_ART"
+      if "$CMD" gbl create "$OUT_GBL" --app "$APP_ART"; then
+        echo "==> OTA image generated: $OUT_GBL"
+      else
+        echo "WARN: OTA .gbl generation failed; continuing." >&2
+        if [[ "$DO_GBL_ONLY" -eq 1 || "$DO_BLE_OTA" -eq 1 ]]; then
+          exit 1
+        fi
       fi
     fi
-  elif [[ "$DO_GBL_ONLY" -eq 1 ]]; then
+  elif [[ "$DO_GBL_ONLY" -eq 1 || "$DO_BLE_OTA" -eq 1 ]]; then
     exit 1
   fi
 fi
 
-if [[ "$DO_COLLECT_ARTIFACTS" -eq 1 ]] && [[ "$DO_BUILD" -eq 1 || "$DO_FLASH" -eq 1 || "$DO_GBL_ONLY" -eq 1 ]]; then
+if [[ "$DO_COLLECT_ARTIFACTS" -eq 1 ]] && [[ "$DO_BUILD" -eq 1 || "$DO_FLASH" -eq 1 || "$DO_GBL_ONLY" -eq 1 || "$DO_BLE_OTA" -eq 1 ]]; then
   echo "==> Staging artifacts + memory summary"
   od_collect_artifacts
   od_print_memory_summary
+fi
+
+run_ble_ota() {
+  local py gbl script
+  if [[ -n "${PYTHON:-}" ]]; then
+    py="$PYTHON"
+  elif [[ -x "$ROOT/.venv-ble-ota/bin/python" ]]; then
+    py="$ROOT/.venv-ble-ota/bin/python"
+  else
+    py="python3"
+  fi
+  gbl="${OTA_IMAGE_OUT:-$CMAKE_DIR/build/base/${TARGET_NAME}.gbl}"
+  if [[ ! -f "$gbl" && -f "$ARTIFACTS_DIR/${TARGET_NAME}.gbl" ]]; then
+    gbl="$ARTIFACTS_DIR/${TARGET_NAME}.gbl"
+  fi
+  if [[ ! -f "$gbl" ]]; then
+    echo "ERROR: no .gbl for BLE OTA at $gbl" >&2
+    return 1
+  fi
+  script="$ROOT/scripts/ble_ota.py"
+  if [[ ! -f "$script" ]]; then
+    echo "ERROR: missing $script" >&2
+    return 1
+  fi
+  if ! "$py" -c "import silabs_ble_ota" 2>/dev/null; then
+    echo "ERROR: silabs-ble-ota not installed for: $py" >&2
+    echo "  python3 -m venv $ROOT/.venv-ble-ota" >&2
+    echo "  $ROOT/.venv-ble-ota/bin/pip install -r $ROOT/scripts/requirements-ble-ota.txt" >&2
+    return 1
+  fi
+  echo "==> BLE OTA via silabs-ble-ota → name '$BLE_OTA_NAME'  gbl=$gbl"
+  echo "    python: $py"
+  local args=(--name "$BLE_OTA_NAME" --gbl "$gbl"
+    --scan-timeout "$BLE_OTA_SCAN_TIMEOUT"
+    --apploader-timeout "$BLE_OTA_APPLOADER_TIMEOUT")
+  [[ -n "$BLE_OTA_KEY" ]] && args+=(--key "$BLE_OTA_KEY")
+  [[ "$BLE_OTA_SLOW" -eq 1 ]] && args+=(--slow)
+  [[ "$BLE_OTA_ALREADY" -eq 1 ]] && args+=(--already-in-ota)
+  "$py" "$script" "${args[@]}"
+}
+
+if [[ "$DO_BLE_OTA" -eq 1 ]]; then
+  run_ble_ota || exit 1
 fi
 
 if [[ "$DO_RTT" -eq 1 ]]; then

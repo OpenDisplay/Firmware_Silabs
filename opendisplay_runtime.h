@@ -41,6 +41,8 @@ struct GlobalConfig {
   uint8_t nfc_config_count;
   struct FlashConfig flash_configs[2];
   uint8_t flash_config_count;
+  struct FindMyConfig findmy_config;
+  bool has_findmy_config;
   uint8_t version;
   uint8_t minor_version;
   bool loaded;

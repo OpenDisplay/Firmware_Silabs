@@ -478,6 +478,33 @@ bool parseConfigBytes(uint8_t* configData, uint32_t configLen, struct GlobalConf
                 }
                 break;
 
+            case CONFIG_PKT_FINDMY: // findmy_config (0x2D)
+                if (offset > configLen) {
+                    printf("Offset overflow before findmy_config\r\n");
+                    globalConfig->loaded = false;
+                    return false;
+                }
+                if (offset + sizeof(struct FindMyConfig) <= configLen - 2) {
+                    memcpy(&globalConfig->findmy_config, &configData[offset], sizeof(struct FindMyConfig));
+                    offset += sizeof(struct FindMyConfig);
+                    if (offset > configLen) {
+                        printf("Offset overflow after findmy_config\r\n");
+                        globalConfig->loaded = false;
+                        return false;
+                    }
+                    globalConfig->has_findmy_config = true;
+                    printf("FindMy: flags=0x%02X, curve=%u, k=%u\r\n",
+                                 globalConfig->findmy_config.flags,
+                                 globalConfig->findmy_config.fmdn_curve,
+                                 globalConfig->findmy_config.fmdn_k);
+                } else {
+                    printf("findmy_config: need %zu, have %u\r\n",
+                                 sizeof(struct FindMyConfig), (unsigned)(configLen - 2 - offset));
+                    globalConfig->loaded = false;
+                    return false;
+                }
+                break;
+
             default:
                 printf("Unknown pkt 0x%02X @%u\r\n", packetId, (unsigned)(offset - 2));
                 offset = configLen - 2; // Skip to CRC

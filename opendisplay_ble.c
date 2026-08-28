@@ -1,4 +1,5 @@
 #include "opendisplay_ble.h"
+#include "opendisplay_net_a_adv.h"
 #include "opendisplay_config_parser.h"
 #include "opendisplay_display.h"
 #include "opendisplay_led.h"
@@ -13,6 +14,7 @@
 #include "em_gpio.h"
 #include "em_iadc.h"
 #include "em_system.h"
+#include "psa/crypto.h"
 #include "sl_gpio.h"
 #include "sl_sleeptimer.h"
 #include "sl_udelay.h"
@@ -144,11 +146,18 @@ static uint8_t fw_patch_from_build_version(void)
 #define OD_ADV_INTERVAL_BOOST_MAX    48u
 #define OD_ADV_BOOST_MS              3000u
 #define OD_MSD_UPDATE_INTERVAL_MS  30000u
+/* FMDN: 1600*0.625ms = 1s — keep off the OD identity address and avoid flooding scanners. */
+#define OD_FMDN_ADV_INTERVAL_SLOTS   1600u
 #define BUTTON_ID_MASK             0x07u
 #define PRESS_COUNT_MASK           0x0Fu
 #define PRESS_COUNT_SHIFT          3u
 #define BUTTON_STATE_SHIFT         7u
 #define OD_MAX_CONNECTION_MS       300000u
+#define OD_FMDN_EID_LEN_256          32u
+#define OD_FMDN_EID_LEN_160          20u
+#define OD_FMDN_HASHED_FLAGS_LEN      1u
+#define OD_FMDN_FRAME_TYPE_NORMAL   0x40u
+#define OD_FMDN_FRAME_TYPE_UTP      0x41u
 
 /* When system_config.pwr_pin is 0xFF, drive this pin HIGH as display rail enable (PA0). Set to 0xFF to disable. */
 #ifndef OD_FALLBACK_DISPLAY_PWR_PIN
@@ -186,6 +195,8 @@ static uint8_t connection_requested = 0u;
 static uint16_t g_od_pipe_char;
 static uint8_t g_connection = 0xFFu;
 static uint8_t s_adv_handle = 0xFFu;
+static uint8_t s_fmdn_adv_handle = 0xFFu;
+static uint8_t s_net_a_adv_handle = 0xFFu;
 static char s_dev_name[16];
 static struct GlobalConfig s_od_global_config;
 static uint32_t s_last_msd_refresh_ms;
@@ -196,6 +207,12 @@ static uint32_t s_connection_open_ms;
 static bool s_connection_timeout_close_requested;
 static uint32_t s_last_batt_measure_ms;
 static uint16_t s_batt_voltage_mv_cache;
+static bool s_fmdn_adv_started;
+static bool s_fmdn_supported_curve;
+static bool s_fmdn_crypto_ready;
+static bool s_fmdn_use_legacy;
+static uint32_t s_fmdn_last_window = UINT32_MAX;
+static uint8_t s_fmdn_last_batt_code = 0xFFu;
 
 static GPIO_Port_TypeDef s_od_flash_mosi_port = gpioPortA;
 static uint8_t s_od_flash_mosi_pin = 0u;
@@ -256,6 +273,7 @@ static volatile bool s_button_msd_dirty;
 static void build_and_apply_adv(uint8_t adv_set, const char *name, bool quick);
 static void od_boost_advertising(uint32_t now_ms);
 static void od_apply_advertising_timing(uint8_t adv_handle, uint32_t now_ms);
+static void od_fmdn_sync(uint32_t now_ms);
 
 #if defined(__GNUC__)
 extern uint32_t __ResetReasonStart__;
@@ -1612,10 +1630,19 @@ void opendisplay_ble_reload_config_from_nvm(void)
   if (!loadGlobalConfig(&s_od_global_config)) {
     printf("[OD] config: reload after save failed\r\n");
   }
+  s_fmdn_last_window = UINT32_MAX;
+  s_fmdn_last_batt_code = 0xFFu;
+  s_fmdn_supported_curve = true;
   od_buttons_init_from_config();
   opendisplay_display_park_pins();
   opendisplay_led_init();
   opendisplay_display_boot_apply();
+  od_net_a_stop(s_net_a_adv_handle);
+  od_fmdn_sync(sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count()));
+  if (s_od_global_config.loaded && s_od_global_config.has_findmy_config
+      && od_net_a_config_active(&s_od_global_config.findmy_config)) {
+    od_net_a_sync(s_net_a_adv_handle, &s_od_global_config.findmy_config);
+  }
 }
 
 static void od_apply_advertising_timing(uint8_t adv_handle, uint32_t now_ms)
@@ -1666,6 +1693,534 @@ static void od_advertising_boost_tick(uint8_t adv_handle, uint32_t now_ms)
     (void)sl_bt_advertiser_stop(adv_handle);
     app_assert_status(sl_bt_legacy_advertiser_start(adv_handle, sl_bt_legacy_advertiser_connectable));
   }
+}
+
+static bool od_findmy_bytes_nonzero(const uint8_t *p, size_t n)
+{
+  size_t i;
+  for (i = 0; i < n; i++) {
+    if (p[i] != 0u) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool od_findmy_config_active(const struct GlobalConfig *cfg)
+{
+  if (cfg == NULL || !cfg->loaded || !cfg->has_findmy_config) {
+    return false;
+  }
+  if ((cfg->findmy_config.flags & OD_FINDMY_FLAG_FMDN_ENABLE) == 0u) {
+    return false;
+  }
+  if (cfg->findmy_config.fmdn_curve == OD_FINDMY_CURVE_SECP160R1) {
+    /* Network G: static 20-byte advertisement key, no time base. */
+    return od_findmy_bytes_nonzero(cfg->findmy_config.advertisement_key,
+                                   sizeof(cfg->findmy_config.advertisement_key));
+  }
+  if (cfg->findmy_config.fmdn_curve == OD_FINDMY_CURVE_SECP256R1) {
+    if (cfg->findmy_config.time_base_unix == 0u) {
+      return false;
+    }
+    return od_findmy_bytes_nonzero(cfg->findmy_config.eik, sizeof(cfg->findmy_config.eik));
+  }
+  return false;
+}
+
+static uint32_t od_fmdn_beacon_counter(const struct FindMyConfig *cfg, uint32_t now_ms)
+{
+  return cfg->time_base_unix + (now_ms / 1000u);
+}
+
+static uint32_t od_fmdn_rotation_window(const struct FindMyConfig *cfg, uint32_t counter)
+{
+  uint8_t k = cfg->fmdn_k;
+  if (k >= 32u) {
+    return 0u;
+  }
+  return counter & ~((1u << k) - 1u);
+}
+
+static bool od_fmdn_crypto_init_once(void)
+{
+  if (s_fmdn_crypto_ready) {
+    return true;
+  }
+  s_fmdn_crypto_ready = (psa_crypto_init() == PSA_SUCCESS);
+  return s_fmdn_crypto_ready;
+}
+
+/* FHN battery bits 5-6: 00 unsupported, 01 normal, 10 low, 11 critical. */
+static uint8_t od_fmdn_battery_code(void)
+{
+  uint16_t mv = s_batt_voltage_mv_cache;
+  uint16_t low_mv = 3500u;
+  uint16_t crit_mv = 3300u;
+
+  if (mv == 0u) {
+    return 0u;
+  }
+  switch (s_od_global_config.power_option.capacity_estimator) {
+    case OD_CAPACITY_EST_LIFEPO4:
+      low_mv = 3200u;
+      crit_mv = 3000u;
+      break;
+    case OD_CAPACITY_EST_SUPERCAP:
+      low_mv = 3800u;
+      crit_mv = 3600u;
+      break;
+    case OD_CAPACITY_EST_LITHIUM_PRIMARY:
+      low_mv = 2700u;
+      crit_mv = 2400u;
+      break;
+    case OD_CAPACITY_EST_LI_ION:
+    case OD_CAPACITY_EST_SEEED_LI_ION:
+    default:
+      break;
+  }
+  if (mv < crit_mv) {
+    return 3u;
+  }
+  if (mv < low_mv) {
+    return 2u;
+  }
+  return 1u;
+}
+
+/* SECP160R1 order n (21 bytes, big-endian). */
+static const uint8_t OD_SECP160R1_N[21] = {
+  0x01u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+  0x01u, 0xF4u, 0xC8u, 0xF9u, 0x27u, 0xAEu, 0xD3u, 0xCAu, 0x75u, 0x22u, 0x57u
+};
+
+static int od_be_cmp32(const uint8_t a[32], const uint8_t b[32])
+{
+  unsigned i;
+  for (i = 0u; i < 32u; i++) {
+    if (a[i] != b[i]) {
+      return (a[i] < b[i]) ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+static void od_be_sub32(uint8_t a[32], const uint8_t b[32])
+{
+  int i;
+  int borrow = 0;
+  for (i = 31; i >= 0; i--) {
+    int x = (int)a[i] - (int)b[i] - borrow;
+    if (x < 0) {
+      x += 256;
+      borrow = 1;
+    } else {
+      borrow = 0;
+    }
+    a[i] = (uint8_t)x;
+  }
+}
+
+static void od_be_shl_n_into(uint8_t out[32], unsigned shift_bits)
+{
+  unsigned byte_shift = shift_bits / 8u;
+  unsigned bit_shift = shift_bits % 8u;
+  size_t dest = 32u - sizeof(OD_SECP160R1_N) - byte_shift;
+  unsigned carry = 0u;
+  size_t i;
+
+  memset(out, 0, 32u);
+  if (bit_shift == 0u) {
+    memcpy(&out[dest], OD_SECP160R1_N, sizeof(OD_SECP160R1_N));
+    return;
+  }
+  for (i = sizeof(OD_SECP160R1_N); i > 0u; i--) {
+    unsigned val = ((unsigned)OD_SECP160R1_N[i - 1u] << bit_shift) | carry;
+    out[dest + i - 1u] = (uint8_t)val;
+    carry = val >> 8;
+  }
+  if (dest > 0u && carry != 0u) {
+    out[dest - 1u] = (uint8_t)carry;
+  }
+}
+
+/* r' (AES output) -> 20-byte r for SHA256 (mod n, MSB-truncated to 160 bits). */
+static void od_fmdn_secp160_r_bytes(const uint8_t r_dash[32], uint8_t r20[20])
+{
+  uint8_t v[32];
+  uint8_t t[32];
+  unsigned shift;
+
+  memcpy(v, r_dash, 32u);
+  for (shift = 88u;; shift--) {
+    od_be_shl_n_into(t, shift);
+    while (od_be_cmp32(v, t) >= 0) {
+      od_be_sub32(v, t);
+    }
+    if (shift == 0u) {
+      break;
+    }
+  }
+  memcpy(r20, &v[12], 20u);
+}
+
+/* Hashed flags for static SECP160 (counter 0). Falls back to 0x00 without EIK. */
+static uint8_t od_fmdn_hashed_flags_secp160(const struct FindMyConfig *cfg, uint8_t raw_flags)
+{
+  uint8_t block[32];
+  uint8_t r_dash[32];
+  uint8_t r20[20];
+  uint8_t digest[32];
+  size_t out_len = 0u;
+  size_t digest_len = 0u;
+  psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+  mbedtls_svc_key_id_t key_id = MBEDTLS_SVC_KEY_ID_INIT;
+  psa_status_t ps;
+  uint8_t k;
+
+  if (!od_findmy_bytes_nonzero(cfg->eik, sizeof(cfg->eik))) {
+    return 0u;
+  }
+  if (!od_fmdn_crypto_init_once()) {
+    return 0u;
+  }
+
+  k = cfg->fmdn_k;
+  if (k == 0u || k >= 32u) {
+    k = 10u;
+  }
+
+  memset(block, 0, sizeof(block));
+  memset(block, 0xFF, 11u);
+  block[11] = k;
+  block[27] = k;
+  /* window / timestamp = 0 for static GFT EID */
+
+  psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+  psa_set_key_bits(&attr, 256);
+  psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+  psa_set_key_algorithm(&attr, PSA_ALG_ECB_NO_PADDING);
+  ps = psa_import_key(&attr, cfg->eik, sizeof(cfg->eik), &key_id);
+  psa_reset_key_attributes(&attr);
+  if (ps != PSA_SUCCESS) {
+    return 0u;
+  }
+  ps = psa_cipher_encrypt(key_id, PSA_ALG_ECB_NO_PADDING, block, sizeof(block),
+                          r_dash, sizeof(r_dash), &out_len);
+  (void)psa_destroy_key(key_id);
+  if (ps != PSA_SUCCESS || out_len != sizeof(r_dash)) {
+    return 0u;
+  }
+
+  od_fmdn_secp160_r_bytes(r_dash, r20);
+  if (psa_hash_compute(PSA_ALG_SHA_256, r20, sizeof(r20), digest, sizeof(digest), &digest_len) != PSA_SUCCESS
+      || digest_len != sizeof(digest)) {
+    return 0u;
+  }
+  return (uint8_t)(raw_flags ^ digest[sizeof(digest) - 1u]);
+}
+
+static bool od_fmdn_compute_eid256(const struct FindMyConfig *cfg,
+                                   uint32_t window_counter,
+                                   uint8_t eid_out[OD_FMDN_EID_LEN_256],
+                                   uint8_t *hashed_flags_out)
+{
+  uint8_t block[32];
+  uint8_t scalar_bytes[32];
+  uint8_t pubkey[65];
+  uint8_t digest[32];
+  size_t out_len = 0u;
+  size_t pubkey_len = 0u;
+  size_t digest_len = 0u;
+  psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+  mbedtls_svc_key_id_t key_id = MBEDTLS_SVC_KEY_ID_INIT;
+  psa_status_t ps;
+  bool ok = false;
+
+  memset(block, 0, sizeof(block));
+  memset(scalar_bytes, 0, sizeof(scalar_bytes));
+  memset(pubkey, 0, sizeof(pubkey));
+  memset(digest, 0, sizeof(digest));
+
+  if (!od_fmdn_crypto_init_once()) {
+    return false;
+  }
+
+  memset(block, 0xFF, 11u);
+  block[11] = cfg->fmdn_k;
+  block[12] = (uint8_t)(window_counter >> 24);
+  block[13] = (uint8_t)(window_counter >> 16);
+  block[14] = (uint8_t)(window_counter >> 8);
+  block[15] = (uint8_t)window_counter;
+  block[27] = cfg->fmdn_k;
+  block[28] = (uint8_t)(window_counter >> 24);
+  block[29] = (uint8_t)(window_counter >> 16);
+  block[30] = (uint8_t)(window_counter >> 8);
+  block[31] = (uint8_t)window_counter;
+
+  psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+  psa_set_key_bits(&attr, 256);
+  psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT);
+  psa_set_key_algorithm(&attr, PSA_ALG_ECB_NO_PADDING);
+  ps = psa_import_key(&attr, cfg->eik, sizeof(cfg->eik), &key_id);
+  psa_reset_key_attributes(&attr);
+  if (ps != PSA_SUCCESS) {
+    return false;
+  }
+  ps = psa_cipher_encrypt(key_id, PSA_ALG_ECB_NO_PADDING, block, sizeof(block), scalar_bytes, sizeof(scalar_bytes), &out_len);
+  (void)psa_destroy_key(key_id);
+  key_id = MBEDTLS_SVC_KEY_ID_INIT;
+  if (ps != PSA_SUCCESS || out_len != sizeof(scalar_bytes)) {
+    return false;
+  }
+
+  psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+  psa_set_key_bits(&attr, 256);
+  psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_EXPORT);
+  psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+  ps = psa_import_key(&attr, scalar_bytes, sizeof(scalar_bytes), &key_id);
+  psa_reset_key_attributes(&attr);
+  if (ps != PSA_SUCCESS) {
+    return false;
+  }
+  ps = psa_export_public_key(key_id, pubkey, sizeof(pubkey), &pubkey_len);
+  (void)psa_destroy_key(key_id);
+  key_id = MBEDTLS_SVC_KEY_ID_INIT;
+  if (ps != PSA_SUCCESS || pubkey_len != 65u || pubkey[0] != 0x04u) {
+    return false;
+  }
+
+  ps = psa_hash_compute(PSA_ALG_SHA_256, scalar_bytes, sizeof(scalar_bytes), digest, sizeof(digest), &digest_len);
+  if (ps != PSA_SUCCESS || digest_len != sizeof(digest)) {
+    return false;
+  }
+
+  memcpy(eid_out, &pubkey[1], OD_FMDN_EID_LEN_256);
+  *hashed_flags_out = digest[sizeof(digest) - 1u];
+  ok = true;
+  return ok;
+}
+
+/* Static random addr from key[0..5]|0xC0 (network A legacy layout). */
+static bool od_fmdn_apply_address_from_key(uint8_t adv_set, const uint8_t key[6])
+{
+  bd_addr addr = { { 0 } };
+  bd_addr applied = { { 0 } };
+  sl_status_t sc;
+
+  addr.addr[5] = (uint8_t)(key[0] | 0xC0u);
+  addr.addr[4] = key[1];
+  addr.addr[3] = key[2];
+  addr.addr[2] = key[3];
+  addr.addr[1] = key[4];
+  addr.addr[0] = key[5];
+
+  sc = sl_bt_advertiser_set_random_address(adv_set,
+                                           sl_bt_gap_static_address,
+                                           addr,
+                                           &applied);
+  if (sc != SL_STATUS_OK) {
+    printf("[OD][FMDN] set_random_address sc=0x%04lX\r\n", (unsigned long)sc);
+    return false;
+  }
+  printf("[OD][FMDN] addr %02X:%02X:%02X:%02X:%02X:%02X (advertisement key)\r\n",
+         applied.addr[5], applied.addr[4], applied.addr[3],
+         applied.addr[2], applied.addr[1], applied.addr[0]);
+  return true;
+}
+
+static bool od_fmdn_build_and_apply_adv(uint8_t adv_set,
+                                        const struct FindMyConfig *cfg,
+                                        uint32_t now_ms,
+                                        uint32_t *window_out)
+{
+  uint8_t adv[48];
+  uint8_t eid[OD_FMDN_EID_LEN_256];
+  uint32_t counter;
+  uint32_t window_counter;
+  uint8_t hashed_flags = 0u;
+  size_t ai = 0u;
+  sl_status_t sc;
+
+  s_fmdn_supported_curve = true;
+  s_fmdn_use_legacy = false;
+  memset(adv, 0, sizeof(adv));
+  memset(eid, 0, sizeof(eid));
+
+  if (cfg->fmdn_curve == OD_FINDMY_CURVE_SECP160R1) {
+    /* Static GFT-compatible frame + FHN hashed flags (battery + UTP). */
+    uint8_t batt = od_fmdn_battery_code();
+    uint8_t raw_flags = (uint8_t)((batt << 5) | 0x80u); /* bit7=UTP matches frame 0x41 */
+
+    window_counter = 0u;
+    memcpy(eid, cfg->advertisement_key, OD_FMDN_EID_LEN_160);
+
+    if (!od_fmdn_apply_address_from_key(adv_set, cfg->advertisement_key)) {
+      return false;
+    }
+
+    adv[ai++] = 2u;
+    adv[ai++] = 0x01u;
+    adv[ai++] = 0x06u;
+    adv[ai++] = 0x19u; /* 25 = UUID(2)+type(1)+EID(20)+flags(1) + type byte */
+    adv[ai++] = 0x16u;
+    adv[ai++] = 0xAAu;
+    adv[ai++] = 0xFEu;
+    adv[ai++] = OD_FMDN_FRAME_TYPE_UTP;
+    memcpy(&adv[ai], eid, OD_FMDN_EID_LEN_160);
+    ai += OD_FMDN_EID_LEN_160;
+    adv[ai++] = od_fmdn_hashed_flags_secp160(cfg, raw_flags);
+    s_fmdn_last_batt_code = batt;
+
+    sc = sl_bt_advertiser_set_timing(adv_set,
+                                     OD_FMDN_ADV_INTERVAL_SLOTS,
+                                     OD_FMDN_ADV_INTERVAL_SLOTS,
+                                     0,
+                                     0);
+    if (sc != SL_STATUS_OK) {
+      printf("[OD][FMDN] set_timing sc=0x%04lX\r\n", (unsigned long)sc);
+      return false;
+    }
+    sc = sl_bt_legacy_advertiser_set_data(adv_set,
+                                          sl_bt_advertiser_advertising_data_packet,
+                                          (uint8_t)ai,
+                                          adv);
+    if (sc != SL_STATUS_OK) {
+      printf("[OD][FMDN] legacy_set_data sc=0x%04lX len=%u\r\n",
+             (unsigned long)sc,
+             (unsigned)ai);
+      return false;
+    }
+    s_fmdn_use_legacy = true;
+    *window_out = window_counter;
+    return true;
+  }
+
+  if (cfg->fmdn_curve != OD_FINDMY_CURVE_SECP256R1) {
+    s_fmdn_supported_curve = false;
+    return false;
+  }
+
+  counter = od_fmdn_beacon_counter(cfg, now_ms);
+  window_counter = od_fmdn_rotation_window(cfg, counter);
+  if (!od_fmdn_compute_eid256(cfg, window_counter, eid, &hashed_flags)) {
+    return false;
+  }
+  if (!od_fmdn_apply_address_from_key(adv_set, cfg->eik)) {
+    return false;
+  }
+
+  adv[ai++] = 2u;
+  adv[ai++] = 0x01u;
+  adv[ai++] = 0x06u;
+  adv[ai++] = 0x25u;
+  adv[ai++] = 0x16u;
+  adv[ai++] = 0xAAu;
+  adv[ai++] = 0xFEu;
+  adv[ai++] = OD_FMDN_FRAME_TYPE_NORMAL;
+  memcpy(&adv[ai], eid, OD_FMDN_EID_LEN_256);
+  ai += OD_FMDN_EID_LEN_256;
+  adv[ai++] = hashed_flags;
+
+  sc = sl_bt_extended_advertiser_set_phy(adv_set, sl_bt_gap_phy_1m, sl_bt_gap_phy_1m);
+  if (sc != SL_STATUS_OK) {
+    printf("[OD][FMDN] set_phy sc=0x%04lX\r\n", (unsigned long)sc);
+    return false;
+  }
+  sc = sl_bt_extended_advertiser_set_data(adv_set, ai, adv);
+  if (sc != SL_STATUS_OK) {
+    printf("[OD][FMDN] set_data sc=0x%04lX len=%u\r\n", (unsigned long)sc, (unsigned)ai);
+    return false;
+  }
+  sc = sl_bt_advertiser_set_timing(adv_set,
+                                   OD_FMDN_ADV_INTERVAL_SLOTS,
+                                   OD_FMDN_ADV_INTERVAL_SLOTS,
+                                   0,
+                                   0);
+  if (sc != SL_STATUS_OK) {
+    printf("[OD][FMDN] set_timing sc=0x%04lX\r\n", (unsigned long)sc);
+    return false;
+  }
+  *window_out = window_counter;
+  return true;
+}
+
+static void od_fmdn_stop(void)
+{
+  if (s_fmdn_adv_handle == 0xFFu || !s_fmdn_adv_started) {
+    return;
+  }
+  if (sl_bt_advertiser_stop(s_fmdn_adv_handle) == SL_STATUS_OK) {
+    s_fmdn_adv_started = false;
+  }
+}
+
+static void od_fmdn_sync(uint32_t now_ms)
+{
+  const struct FindMyConfig *cfg = &s_od_global_config.findmy_config;
+  uint32_t current_window;
+  uint32_t window_counter;
+  sl_status_t sc;
+
+  if (s_fmdn_adv_handle == 0xFFu) {
+    return;
+  }
+  if (!od_findmy_config_active(&s_od_global_config)) {
+    od_fmdn_stop();
+    s_fmdn_last_window = UINT32_MAX;
+    s_fmdn_last_batt_code = 0xFFu;
+    return;
+  }
+
+  if (cfg->fmdn_curve == OD_FINDMY_CURVE_SECP160R1) {
+    current_window = 0u;
+  } else {
+    current_window = od_fmdn_rotation_window(cfg, od_fmdn_beacon_counter(cfg, now_ms));
+  }
+  /* Retry after failure; refresh when rotation window or battery band changes. */
+  if (current_window == s_fmdn_last_window
+      && s_fmdn_adv_started
+      && (cfg->fmdn_curve != OD_FINDMY_CURVE_SECP160R1
+          || od_fmdn_battery_code() == s_fmdn_last_batt_code)) {
+    return;
+  }
+  /* Address/data changes require the set to be stopped first. */
+  od_fmdn_stop();
+  if (!od_fmdn_build_and_apply_adv(s_fmdn_adv_handle,
+                                   cfg,
+                                   now_ms,
+                                   &window_counter)) {
+    if (!s_fmdn_supported_curve) {
+      printf("[OD][FMDN] curve=%u unsupported on current advertiser path\r\n", (unsigned)cfg->fmdn_curve);
+      s_fmdn_last_window = current_window; /* don't spin on unsupported curve */
+    } else {
+      printf("[OD][FMDN] payload generation failed — will retry\r\n");
+    }
+    return;
+  }
+  if (s_fmdn_use_legacy) {
+    sc = sl_bt_legacy_advertiser_start(s_fmdn_adv_handle,
+                                       sl_bt_legacy_advertiser_non_connectable);
+  } else {
+    sc = sl_bt_extended_advertiser_start(s_fmdn_adv_handle,
+                                         sl_bt_extended_advertiser_non_connectable,
+                                         0);
+  }
+  if (sc != SL_STATUS_OK) {
+    printf("[OD][FMDN] advertiser_start sc=0x%04lX legacy=%u\r\n",
+           (unsigned long)sc,
+           (unsigned)s_fmdn_use_legacy);
+    s_fmdn_adv_started = false;
+    return;
+  }
+  s_fmdn_adv_started = true;
+  s_fmdn_last_window = window_counter;
+  printf("[OD][FMDN] advertising active curve=%u k=%u window=%lu legacy=%u interval~%ums\r\n",
+         (unsigned)cfg->fmdn_curve,
+         (unsigned)cfg->fmdn_k,
+         (unsigned long)window_counter,
+         (unsigned)s_fmdn_use_legacy,
+         (unsigned)((OD_FMDN_ADV_INTERVAL_SLOTS * 5u) / 8u));
 }
 
 static void chip_id_hex6(char out[7])
@@ -1869,7 +2424,9 @@ static void build_and_apply_adv(uint8_t adv_set, const char *name, bool quick)
   app_assert_status(sc);
 }
 
-void opendisplay_ble_on_boot(uint8_t advertising_set_handle)
+void opendisplay_ble_on_boot(uint8_t advertising_set_handle,
+                             uint8_t fmdn_advertising_set_handle,
+                             uint8_t net_a_advertising_set_handle)
 {
   char hex[7];
   sl_status_t sc;
@@ -1890,7 +2447,17 @@ void opendisplay_ble_on_boot(uint8_t advertising_set_handle)
   od_init_aux_peripherals();
 
   s_adv_handle = advertising_set_handle;
-  printf("[OD] BLE boot: adv_set=%u\r\n", (unsigned)advertising_set_handle);
+  s_fmdn_adv_handle = fmdn_advertising_set_handle;
+  s_net_a_adv_handle = net_a_advertising_set_handle;
+  s_fmdn_adv_started = false;
+  s_fmdn_supported_curve = true;
+  s_fmdn_use_legacy = false;
+  s_fmdn_last_window = UINT32_MAX;
+  s_fmdn_last_batt_code = 0xFFu;
+  printf("[OD] BLE boot: adv_set=%u fmdn_adv_set=%u net_a_adv_set=%u\r\n",
+         (unsigned)advertising_set_handle,
+         (unsigned)fmdn_advertising_set_handle,
+         (unsigned)net_a_advertising_set_handle);
 
   chip_id_hex6(hex);
   snprintf(s_dev_name, sizeof(s_dev_name), "%s%s", OD_NAME_PREFIX, hex);
@@ -1932,6 +2499,11 @@ void opendisplay_ble_on_boot(uint8_t advertising_set_handle)
   }
   app_assert_status(sc);
   printf("[OD] advertising started (~1 s interval while idle)\r\n");
+  od_fmdn_sync(sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count()));
+  if (s_od_global_config.loaded && s_od_global_config.has_findmy_config
+      && od_net_a_config_active(&s_od_global_config.findmy_config)) {
+    od_net_a_sync(s_net_a_adv_handle, &s_od_global_config.findmy_config);
+  }
 }
 
 void opendisplay_ble_restart_advertising(uint8_t advertising_set_handle)
@@ -1974,6 +2546,7 @@ void opendisplay_ble_on_event(sl_bt_msg_t *evt)
         opendisplay_ble_restart_advertising(s_adv_handle);
         printf("[OD] advertising resumed after disconnect\r\n");
       }
+      od_fmdn_sync(sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count()));
       break;
     default:
       (void)g_od_pipe_char;
@@ -2007,6 +2580,10 @@ void opendisplay_ble_process(void)
     if (s_adv_handle != 0xFFu) {
       build_and_apply_adv(s_adv_handle, s_dev_name, false);
     }
+  }
+  if (s_od_global_config.loaded && s_od_global_config.has_findmy_config) {
+    od_fmdn_sync(now_ms);
+    od_net_a_sync(s_net_a_adv_handle, &s_od_global_config.findmy_config);
   }
   if (g_connection != 0xFFu
       && !s_connection_timeout_close_requested

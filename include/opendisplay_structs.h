@@ -348,7 +348,8 @@ enum ConfigPacketType {
     OD_PKT_BUZZER         = 0x29, /**< @doc "buzzer (repeatable, max 4). Canonical name is BUZZER (matches Silabs), resolving the Silabs BUZZER vs NRF54/yaml PASSIVE_BUZZER split; config.yaml's packet name (passive_buzzer) is regenerated to buzzer." */
     OD_PKT_NFC            = 0x2A, /**< @doc "nfc_config (repeatable, max 2)" */
     OD_PKT_FLASH          = 0x2B, /**< @doc "flash_config (repeatable, max 2)" */
-    OD_PKT_DATA_EXTENDED  = 0x2C  /**< @doc "data_extended (singleton)" */
+    OD_PKT_DATA_EXTENDED  = 0x2C, /**< @doc "data_extended (singleton)" */
+    OD_PKT_FINDMY         = 0x2D  /**< @doc "findmy_config (singleton)" */
 };
 
 /* ==========================================================================
@@ -1073,6 +1074,40 @@ struct DataExtended {
     uint8_t custom_string_3[32];   /**< @doc "user-defined string 3." */
 } __attribute__((packed));
 OD_STATIC_ASSERT(sizeof(struct DataExtended) == 288, "DataExtended wire size");
+
+/* -----------------------------------------------------------------------
+ * 0x2D  findmy_config
+ * ----------------------------------------------------------------------- */
+
+/** @enum FindMyCurve  @width 1  @doc "FMDN EID curve selector (FindMyConfig.fmdn_curve)." */
+enum FindMyCurve {
+    OD_FINDMY_CURVE_SECP160R1 = 0, /**< @doc "20-byte static EID (network G / legacy AD). Uses advertisement_key." */
+    OD_FINDMY_CURVE_SECP256R1 = 1  /**< @doc "32-byte rotating EID on SECP256R1 (extended AD)." */
+};
+
+/* FindMyConfig.flags @bits FindMyFlags (bits 2-7 reserved). */
+#define OD_FINDMY_FLAG_FMDN_ENABLE   (1u << 0) /* @doc "enable network G (FMDN) advertising." */
+#define OD_FINDMY_FLAG_NET_A_ENABLE  (1u << 1) /* @doc "enable network A (legacy offline-finding) advertising." */
+
+/** @struct FindMyConfig  @packet 0x2D
+ *  @doc "Proximity-network provisioning blob. Singleton. 128 bytes. For network G use
+ *  fmdn_curve=secp160r1 with advertisement_key=generate_eid(eik,0) (static beacon_counter=0).
+ *  SECP256R1 rotates from eik+time_base on-device.
+ *  For network A set net_a_enable and net_a_adv_key to the 28-byte P-224 advertisement public key X.
+ *  net_a_time_base stays 0 (static mode, no on-device rotation). Reserved bytes must be zero." */
+struct FindMyConfig {
+    uint8_t flags;                   /**< @bits FindMyFlags @doc "enable flags; bits 2-7 reserved." */
+    uint8_t fmdn_k;                  /**< @doc "FMDN rotation-period exponent K (typically 10)." */
+    uint8_t fmdn_curve;              /**< @enum FindMyCurve @doc "FMDN EID curve selector." */
+    uint8_t reserved0[5];            /**< @reserved @doc "must be 0; pads the control header to 8 bytes." */
+    uint8_t eik[32];                 /**< @doc "Network G ephemeral identity key (32 bytes)." */
+    uint8_t net_a_adv_key[28];       /**< @doc "Network A 28-byte advertisement public key X (not the private key)." */
+    uint32_t time_base_unix;         /**< @endian le @unit s @doc "Unix epoch for SECP256R1 rotation; unused for static SECP160 (write 0)." */
+    uint32_t net_a_time_base;        /**< @endian le @unit s @doc "unused in static network A mode; write 0." */
+    uint8_t advertisement_key[20];   /**< @doc "Static 20-byte SECP160 EID for network G (generate_eid(eik,0)); zero when unused." */
+    uint8_t reserved1[32];           /**< @reserved @doc "must be 0; reserved for future extensions." */
+} __attribute__((packed));
+OD_STATIC_ASSERT(sizeof(struct FindMyConfig) == 128, "FindMyConfig wire size");
 
 /* ==========================================================================
  * SECTION 5 -- MESSAGE PAYLOAD STRUCTS  (fixed-size opcode payloads)

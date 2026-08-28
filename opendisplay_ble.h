@@ -11,7 +11,9 @@ extern "C" {
 
 struct GlobalConfig;
 
-void opendisplay_ble_on_boot(uint8_t advertising_set_handle);
+void opendisplay_ble_on_boot(uint8_t advertising_set_handle,
+                             uint8_t fmdn_advertising_set_handle,
+                             uint8_t net_a_advertising_set_handle);
 
 const struct GlobalConfig *opendisplay_get_global_config(void);
 

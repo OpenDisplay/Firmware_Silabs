@@ -24,6 +24,7 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 .Python
+.venv-ble-ota/
 
 # Optional local overrides (secrets, machine paths)
 scripts/env.local.sh
