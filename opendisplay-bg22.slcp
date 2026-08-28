@@ -21,7 +21,7 @@ readme:
 source:
 - path: app.c
 - path: opendisplay_ble.c
-- path: opendisplay_apple_findmy.c
+- path: opendisplay_net_a_adv.c
 - path: opendisplay_pipe.c
 - path: opendisplay_config_storage.c
 - path: opendisplay_config_parser.c

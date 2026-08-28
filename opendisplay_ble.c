@@ -1,5 +1,5 @@
 #include "opendisplay_ble.h"
-#include "opendisplay_apple_findmy.h"
+#include "opendisplay_net_a_adv.h"
 #include "opendisplay_config_parser.h"
 #include "opendisplay_display.h"
 #include "opendisplay_led.h"
@@ -196,7 +196,7 @@ static uint16_t g_od_pipe_char;
 static uint8_t g_connection = 0xFFu;
 static uint8_t s_adv_handle = 0xFFu;
 static uint8_t s_fmdn_adv_handle = 0xFFu;
-static uint8_t s_apple_adv_handle = 0xFFu;
+static uint8_t s_net_a_adv_handle = 0xFFu;
 static char s_dev_name[16];
 static struct GlobalConfig s_od_global_config;
 static uint32_t s_last_msd_refresh_ms;
@@ -1637,11 +1637,11 @@ void opendisplay_ble_reload_config_from_nvm(void)
   opendisplay_display_park_pins();
   opendisplay_led_init();
   opendisplay_display_boot_apply();
-  od_apple_stop(s_apple_adv_handle);
+  od_net_a_stop(s_net_a_adv_handle);
   od_fmdn_sync(sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count()));
   if (s_od_global_config.loaded && s_od_global_config.has_findmy_config
-      && od_apple_config_active(&s_od_global_config.findmy_config)) {
-    od_apple_sync(s_apple_adv_handle, &s_od_global_config.findmy_config);
+      && od_net_a_config_active(&s_od_global_config.findmy_config)) {
+    od_net_a_sync(s_net_a_adv_handle, &s_od_global_config.findmy_config);
   }
 }
 
@@ -1715,7 +1715,7 @@ static bool od_findmy_config_active(const struct GlobalConfig *cfg)
     return false;
   }
   if (cfg->findmy_config.fmdn_curve == OD_FINDMY_CURVE_SECP160R1) {
-    /* GoogleFindMyTools path: static 20-byte advertisement key, no time base. */
+    /* Network G: static 20-byte advertisement key, no time base. */
     return od_findmy_bytes_nonzero(cfg->findmy_config.advertisement_key,
                                    sizeof(cfg->findmy_config.advertisement_key));
   }
@@ -2001,7 +2001,7 @@ static bool od_fmdn_compute_eid256(const struct FindMyConfig *cfg,
   return ok;
 }
 
-/* Static random addr from key[0..5]|0xC0 (same layout as OpenHaystack / Apple). */
+/* Static random addr from key[0..5]|0xC0 (network A legacy layout). */
 static bool od_fmdn_apply_address_from_key(uint8_t adv_set, const uint8_t key[6])
 {
   bd_addr addr = { { 0 } };
@@ -2426,7 +2426,7 @@ static void build_and_apply_adv(uint8_t adv_set, const char *name, bool quick)
 
 void opendisplay_ble_on_boot(uint8_t advertising_set_handle,
                              uint8_t fmdn_advertising_set_handle,
-                             uint8_t apple_advertising_set_handle)
+                             uint8_t net_a_advertising_set_handle)
 {
   char hex[7];
   sl_status_t sc;
@@ -2448,16 +2448,16 @@ void opendisplay_ble_on_boot(uint8_t advertising_set_handle,
 
   s_adv_handle = advertising_set_handle;
   s_fmdn_adv_handle = fmdn_advertising_set_handle;
-  s_apple_adv_handle = apple_advertising_set_handle;
+  s_net_a_adv_handle = net_a_advertising_set_handle;
   s_fmdn_adv_started = false;
   s_fmdn_supported_curve = true;
   s_fmdn_use_legacy = false;
   s_fmdn_last_window = UINT32_MAX;
   s_fmdn_last_batt_code = 0xFFu;
-  printf("[OD] BLE boot: adv_set=%u fmdn_adv_set=%u apple_adv_set=%u\r\n",
+  printf("[OD] BLE boot: adv_set=%u fmdn_adv_set=%u net_a_adv_set=%u\r\n",
          (unsigned)advertising_set_handle,
          (unsigned)fmdn_advertising_set_handle,
-         (unsigned)apple_advertising_set_handle);
+         (unsigned)net_a_advertising_set_handle);
 
   chip_id_hex6(hex);
   snprintf(s_dev_name, sizeof(s_dev_name), "%s%s", OD_NAME_PREFIX, hex);
@@ -2501,8 +2501,8 @@ void opendisplay_ble_on_boot(uint8_t advertising_set_handle,
   printf("[OD] advertising started (~1 s interval while idle)\r\n");
   od_fmdn_sync(sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count()));
   if (s_od_global_config.loaded && s_od_global_config.has_findmy_config
-      && od_apple_config_active(&s_od_global_config.findmy_config)) {
-    od_apple_sync(s_apple_adv_handle, &s_od_global_config.findmy_config);
+      && od_net_a_config_active(&s_od_global_config.findmy_config)) {
+    od_net_a_sync(s_net_a_adv_handle, &s_od_global_config.findmy_config);
   }
 }
 
@@ -2583,7 +2583,7 @@ void opendisplay_ble_process(void)
   }
   if (s_od_global_config.loaded && s_od_global_config.has_findmy_config) {
     od_fmdn_sync(now_ms);
-    od_apple_sync(s_apple_adv_handle, &s_od_global_config.findmy_config);
+    od_net_a_sync(s_net_a_adv_handle, &s_od_global_config.findmy_config);
   }
   if (g_connection != 0xFFu
       && !s_connection_timeout_close_requested

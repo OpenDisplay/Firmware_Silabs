@@ -37,7 +37,7 @@
 // The advertising set handles allocated from Bluetooth stack.
 static uint8_t advertising_set_handle = 0xff;
 static uint8_t fmdn_advertising_set_handle = 0xff;
-static uint8_t apple_advertising_set_handle = 0xff;
+static uint8_t net_a_advertising_set_handle = 0xff;
 
 // Application Init.
 void app_init(void)
@@ -87,14 +87,14 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         printf("[app] advertiser_create_set(fmdn) sc=0x%04lX\r\n", (unsigned long)sc);
       }
       app_assert_status(sc);
-      sc = sl_bt_advertiser_create_set(&apple_advertising_set_handle);
+      sc = sl_bt_advertiser_create_set(&net_a_advertising_set_handle);
       if (sc != SL_STATUS_OK) {
-        printf("[app] advertiser_create_set(apple) sc=0x%04lX\r\n", (unsigned long)sc);
+        printf("[app] advertiser_create_set(net_a) sc=0x%04lX\r\n", (unsigned long)sc);
       }
       app_assert_status(sc);
       opendisplay_ble_on_boot(advertising_set_handle,
                               fmdn_advertising_set_handle,
-                              apple_advertising_set_handle);
+                              net_a_advertising_set_handle);
       break;
 
     // -------------------------------

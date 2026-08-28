@@ -1081,32 +1081,31 @@ OD_STATIC_ASSERT(sizeof(struct DataExtended) == 288, "DataExtended wire size");
 
 /** @enum FindMyCurve  @width 1  @doc "FMDN EID curve selector (FindMyConfig.fmdn_curve)." */
 enum FindMyCurve {
-    OD_FINDMY_CURVE_SECP160R1 = 0, /**< @doc "20-byte static EID (GoogleFindMyTools / legacy AD). Uses advertisement_key." */
-    OD_FINDMY_CURVE_SECP256R1 = 1  /**< @doc "32-byte rotating EID on SECP256R1 (extended AD; not used by GFT)." */
+    OD_FINDMY_CURVE_SECP160R1 = 0, /**< @doc "20-byte static EID (network G / legacy AD). Uses advertisement_key." */
+    OD_FINDMY_CURVE_SECP256R1 = 1  /**< @doc "32-byte rotating EID on SECP256R1 (extended AD)." */
 };
 
 /* FindMyConfig.flags @bits FindMyFlags (bits 2-7 reserved). */
-#define OD_FINDMY_FLAG_FMDN_ENABLE   (1u << 0) /* @doc "enable Google Find My Device Network advertising." */
-#define OD_FINDMY_FLAG_APPLE_ENABLE  (1u << 1) /* @doc "enable Apple OpenHaystack / Offline Finding advertising." */
+#define OD_FINDMY_FLAG_FMDN_ENABLE   (1u << 0) /* @doc "enable network G (FMDN) advertising." */
+#define OD_FINDMY_FLAG_NET_A_ENABLE  (1u << 1) /* @doc "enable network A (legacy offline-finding) advertising." */
 
 /** @struct FindMyConfig  @packet 0x2D
- *  @doc "Find My provisioning blob. Singleton. 128 bytes. For GoogleFindMyTools
- *  compatibility use fmdn_curve=secp160r1 with advertisement_key=generate_eid(eik,0)
- *  (static beacon_counter=0). SECP256R1 rotates from eik+time_base on-device.
- *  For Apple OpenHaystack set apple_enable and apple_master_secret to the 28-byte
- *  P-224 advertisement public key X (MaclessHaystack Advertisement key, base64-decoded).
- *  apple_time_base stays 0 (static mode, no on-device rotation). Reserved bytes must be zero." */
+ *  @doc "Proximity-network provisioning blob. Singleton. 128 bytes. For network G use
+ *  fmdn_curve=secp160r1 with advertisement_key=generate_eid(eik,0) (static beacon_counter=0).
+ *  SECP256R1 rotates from eik+time_base on-device.
+ *  For network A set net_a_enable and net_a_adv_key to the 28-byte P-224 advertisement public key X.
+ *  net_a_time_base stays 0 (static mode, no on-device rotation). Reserved bytes must be zero." */
 struct FindMyConfig {
     uint8_t flags;                   /**< @bits FindMyFlags @doc "enable flags; bits 2-7 reserved." */
-    uint8_t fmdn_k;                  /**< @doc "FMDN rotation-period exponent K (use 10 for GFT)." */
+    uint8_t fmdn_k;                  /**< @doc "FMDN rotation-period exponent K (typically 10)." */
     uint8_t fmdn_curve;              /**< @enum FindMyCurve @doc "FMDN EID curve selector." */
     uint8_t reserved0[5];            /**< @reserved @doc "must be 0; pads the control header to 8 bytes." */
-    uint8_t eik[32];                 /**< @doc "Google FMDN Ephemeral Identity Key (32 bytes)." */
-    uint8_t apple_master_secret[28]; /**< @doc "Apple OpenHaystack 28-byte advertisement public key X (not the private key)." */
+    uint8_t eik[32];                 /**< @doc "Network G ephemeral identity key (32 bytes)." */
+    uint8_t net_a_adv_key[28];       /**< @doc "Network A 28-byte advertisement public key X (not the private key)." */
     uint32_t time_base_unix;         /**< @endian le @unit s @doc "Unix epoch for SECP256R1 rotation; unused for static SECP160 (write 0)." */
-    uint32_t apple_time_base;        /**< @endian le @unit s @doc "unused in static Apple mode; write 0." */
-    uint8_t advertisement_key[20];   /**< @doc "Static 20-byte SECP160 EID for GFT (generate_eid(eik,0)); zero when unused." */
-    uint8_t reserved1[32];           /**< @reserved @doc "must be 0; reserved for future FMDN/Apple extensions." */
+    uint32_t net_a_time_base;        /**< @endian le @unit s @doc "unused in static network A mode; write 0." */
+    uint8_t advertisement_key[20];   /**< @doc "Static 20-byte SECP160 EID for network G (generate_eid(eik,0)); zero when unused." */
+    uint8_t reserved1[32];           /**< @reserved @doc "must be 0; reserved for future extensions." */
 } __attribute__((packed));
 OD_STATIC_ASSERT(sizeof(struct FindMyConfig) == 128, "FindMyConfig wire size");
 
