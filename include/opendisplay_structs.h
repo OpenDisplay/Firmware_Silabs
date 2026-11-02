@@ -738,6 +738,11 @@ OD_STATIC_ASSERT(sizeof(struct DisplayConfig) == 46, "DisplayConfig wire size");
 #define OD_MAX_LUT_SLOTS 2u   /* 16-colour needs 2: colour + edit (shared by
                                * passes 1-2), so 3 passes cost 2 slots. */
 
+/* ON THE WIRE the packet carries the sequence inline (157 B). IN RAM we keep
+ * only a reference into the stored config blob, which is already resident in
+ * s_cfg_rec.data[]. Copying it again cost 128 B per mode for a second copy of
+ * bytes we already had -- measured: the embedded version left just 480 B of
+ * RAM free on this 32 KB part. */
 struct DisplayModeConfig {
     uint8_t  instance_number;
     uint8_t  mode_index;
@@ -750,9 +755,12 @@ struct DisplayModeConfig {
     int8_t   temp_max_c;
     uint8_t  temp_policy;
     uint16_t seq_len;
-    uint8_t  init_seq[OD_SEQ_FIELD_BYTES];
+    uint16_t seq_blob_off;  /* offset of init_seq within the config blob */
 } __attribute__((packed));
 
+/* Same reasoning: the 535-byte waveform stays in the resident config blob and
+ * this is only a pointer to it. The driver streams it straight from there to
+ * SPI, so it is never copied at all. */
 struct DisplayLutConfig {
     uint8_t  instance_number;
     uint8_t  lut_slot;
@@ -760,7 +768,7 @@ struct DisplayLutConfig {
     uint16_t crc16;         /* slot failing CRC is treated as ABSENT, so an
                              * interrupted write falls back to no-custom-LUT
                              * instead of driving a half-written waveform */
-    uint8_t  data[OD_LUT_FIELD_BYTES];
+    uint16_t data_blob_off; /* offset of data[] within the config blob */
 } __attribute__((packed));
 
 #define OD_MODE_FLAG_ANALOG_FROM_WAVE 0x01u

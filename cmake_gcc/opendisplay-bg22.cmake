@@ -176,6 +176,7 @@ add_library(slc OBJECT
     "../opendisplay_net_a_adv.c"
     "../opendisplay_pipe.c"
     "../opendisplay_config_storage.c"
+    "../od_cfg_index.c"
     "../opendisplay_config_parser.c"
     "../opendisplay_display_color.c"
     "../opendisplay_display.cpp"
@@ -266,7 +267,7 @@ target_include_directories(slc PUBLIC
 )
 
 target_compile_definitions(slc PUBLIC
-    "NVM3_MAX_OBJECT_SIZE=2112"
+    "NVM3_MAX_OBJECT_SIZE=4096"
     "OPENDISPLAY_ZLIB_WINDOW_BITS=9"
     "OPENDISPLAY_ZLIB_USE_HEAP_WINDOW=0"
     "__SILABS_BG22__=1"

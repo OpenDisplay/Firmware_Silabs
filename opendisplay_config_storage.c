@@ -4,6 +4,7 @@
 #include "sl_status.h"
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define OD_NVM3_CONFIG_KEY ((nvm3_ObjectKey_t)0x0F4401u)
@@ -25,13 +26,46 @@ _Static_assert(sizeof(od_config_header_t) ==
                    offsetof(opendisplay_config_storage_t, data),
                "config header layout mismatch");
 
-/* Single shared staging record: .data is the config work buffer for pipe/parser;
- * full struct is used by saveConfig. Not re-entrant (BLE event loop is single-threaded). */
-static opendisplay_config_storage_t s_cfg_rec;
+/* Staging record, HEAP-ALLOCATED AND TRANSIENT.
+ *
+ * This used to be a static `opendisplay_config_storage_t`, which made it the
+ * largest application symbol on this 32 KB part (2064 B, more than the parsed
+ * GlobalConfig at 1115 B) -- a permanently resident second copy of bytes that
+ * already live in NVM3. Raising MAX_CONFIG_SIZE to 4096 would have made that
+ * 4112 B of permanent RAM for a buffer used only while a config is being
+ * written or parsed.
+ *
+ * Now it is allocated on first use and released afterwards, so the resident
+ * cost is one pointer. NVM3 is the single source of truth and od_cfg_index
+ * keeps a 192-byte map so runtime lookups need no buffer at all.
+ *
+ * Not re-entrant, which is unchanged: the BLE event loop is single-threaded. */
+static opendisplay_config_storage_t *s_cfg_rec_p;
+
+static opendisplay_config_storage_t *cfg_rec(void)
+{
+  if (s_cfg_rec_p == NULL) {
+    s_cfg_rec_p = (opendisplay_config_storage_t *)malloc(
+        sizeof(opendisplay_config_storage_t));
+    if (s_cfg_rec_p != NULL) {
+      memset(s_cfg_rec_p, 0, sizeof(opendisplay_config_storage_t));
+    }
+  }
+  return s_cfg_rec_p;
+}
+
+void opendisplay_config_buf_release(void)
+{
+  if (s_cfg_rec_p != NULL) {
+    free(s_cfg_rec_p);
+    s_cfg_rec_p = NULL;
+  }
+}
 
 uint8_t *opendisplay_config_buf(void)
 {
-  return s_cfg_rec.data;
+  opendisplay_config_storage_t *r = cfg_rec();
+  return (r != NULL) ? r->data : NULL;
 }
 
 bool initConfigStorage(void)
@@ -67,19 +101,19 @@ bool saveConfig(uint8_t *config_data, uint32_t len)
     return false;
   }
 
-  /* CRC before any header writes; config_data may alias s_cfg_rec.data. */
+  /* CRC before any header writes; config_data may alias cfg_rec()->data. */
   crc = calculateConfigCRC(config_data, len);
-  if (config_data != s_cfg_rec.data) {
-    memcpy(s_cfg_rec.data, config_data, len);
+  if (config_data != cfg_rec()->data) {
+    memcpy(cfg_rec()->data, config_data, len);
   }
 
-  s_cfg_rec.magic = CONFIG_STORAGE_MAGIC;
-  s_cfg_rec.version = CONFIG_STORAGE_VERSION;
-  s_cfg_rec.data_len = len;
-  s_cfg_rec.crc = crc;
+  cfg_rec()->magic = CONFIG_STORAGE_MAGIC;
+  cfg_rec()->version = CONFIG_STORAGE_VERSION;
+  cfg_rec()->data_len = len;
+  cfg_rec()->crc = crc;
 
   total = header_sz + len;
-  sc = nvm3_writeData(nvm3_defaultHandle, OD_NVM3_CONFIG_KEY, &s_cfg_rec, total);
+  sc = nvm3_writeData(nvm3_defaultHandle, OD_NVM3_CONFIG_KEY, cfg_rec(), total);
   if (sc != SL_STATUS_OK) {
     printf("[OD] nvm3_writeData config key=0x%06lX sc=0x%04lX len=%u\r\n",
            (unsigned long)OD_NVM3_CONFIG_KEY, (unsigned long)sc, (unsigned)total);

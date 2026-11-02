@@ -17,9 +17,9 @@
 #ifndef NVM3_DEFAULT_MAX_OBJECT_SIZE
 // <o NVM3_DEFAULT_MAX_OBJECT_SIZE> NVM3 Default Instance Max Object Size
 // <i> Max NVM3 object size that can be stored.
-// <i> Must cover opendisplay config record: 16-byte header + MAX_CONFIG_SIZE (2048).
+// <i> Must cover opendisplay config record: 16-byte header + MAX_CONFIG_SIZE (4080).
 // <i> Keep in sync with NVM3_MAX_OBJECT_SIZE in cmake_gcc/opendisplay-bg22.cmake.
-#define NVM3_DEFAULT_MAX_OBJECT_SIZE  2112
+#define NVM3_DEFAULT_MAX_OBJECT_SIZE  4096
 #endif
 
 #ifndef NVM3_DEFAULT_REPACK_HEADROOM

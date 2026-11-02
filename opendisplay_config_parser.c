@@ -209,26 +209,48 @@ bool parseConfigBytes(uint8_t* configData, uint32_t configLen, struct GlobalConf
                 
             case CONFIG_PKT_DISPLAY_MODE: // 0x2E display_mode
                 if (globalConfig->display_mode_count < OD_MAX_MODES_PER_DISPLAY &&
-                    offset + sizeof(struct DisplayModeConfig) <= configLen - 2) {
-                    memcpy(&globalConfig->display_modes[globalConfig->display_mode_count],
-                           &configData[offset], sizeof(struct DisplayModeConfig));
+                    offset + CONFIG_PKT_DISPLAY_MODE_SIZE <= configLen - 2) {
+                    struct DisplayModeConfig *m =
+                        &globalConfig->display_modes[globalConfig->display_mode_count];
+                    const uint8_t *b = &configData[offset];
+                    m->instance_number = b[0];
+                    m->mode_index      = b[1];
+                    memcpy(m->mode_name, &b[2], 12);
+                    m->passes          = b[14];
+                    memcpy(m->lut_slot, &b[15], 4);
+                    memcpy(m->vsn1,     &b[19], 4);
+                    m->mode_flags      = b[23];
+                    m->temp_min_c      = (int8_t)b[24];
+                    m->temp_max_c      = (int8_t)b[25];
+                    m->temp_policy     = b[26];
+                    m->seq_len         = (uint16_t)(b[27] | (b[28] << 8));
+                    /* Reference the sequence where it already sits. */
+                    m->seq_blob_off    = (uint16_t)(offset + 29u);
+                    if (m->seq_len > OD_SEQ_FIELD_BYTES) {
+                        m->seq_len = 0;   /* refuse rather than over-read */
+                    }
                     globalConfig->display_mode_count++;
-                    offset += sizeof(struct DisplayModeConfig);
-                } else {
-                    offset += sizeof(struct DisplayModeConfig);
                 }
+                offset += CONFIG_PKT_DISPLAY_MODE_SIZE;
                 break;
 
             case CONFIG_PKT_DISPLAY_LUT: // 0x2F display_lut
                 if (globalConfig->display_lut_count < OD_MAX_LUT_SLOTS &&
-                    offset + sizeof(struct DisplayLutConfig) <= configLen - 2) {
-                    memcpy(&globalConfig->display_luts[globalConfig->display_lut_count],
-                           &configData[offset], sizeof(struct DisplayLutConfig));
+                    offset + CONFIG_PKT_DISPLAY_LUT_SIZE <= configLen - 2) {
+                    struct DisplayLutConfig *l =
+                        &globalConfig->display_luts[globalConfig->display_lut_count];
+                    const uint8_t *b = &configData[offset];
+                    l->instance_number = b[0];
+                    l->lut_slot        = b[1];
+                    l->lut_len         = (uint16_t)(b[2] | (b[3] << 8));
+                    l->crc16           = (uint16_t)(b[4] | (b[5] << 8));
+                    l->data_blob_off   = (uint16_t)(offset + 6u);
+                    if (l->lut_len > OD_LUT_FIELD_BYTES) {
+                        l->lut_len = 0;
+                    }
                     globalConfig->display_lut_count++;
-                    offset += sizeof(struct DisplayLutConfig);
-                } else {
-                    offset += sizeof(struct DisplayLutConfig);
                 }
+                offset += CONFIG_PKT_DISPLAY_LUT_SIZE;
                 break;
 
             case CONFIG_PKT_DISPLAY_CALIB: // 0x30 - stored by the HOST, inert here
