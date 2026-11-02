@@ -340,6 +340,19 @@ panel showed something wrong.
    immediately after an OTA — skipped its boot screen and could never redraw it, defeating the
    deliberate retry from the config-reload path. Devices need this build for the retry to
    work; on older builds, power-cycle after writing the config.
+   **Follow-on:** making that retry real exposed an ordering bug — the redraw sat in front of
+   the config-write ACK, so a ~20–35 s panel refresh pushed the ACK past py-opendisplay's 5 s
+   bound and a *successful* write reported as a timeout. The index rebuild still precedes the
+   ACK (the host may send another command immediately); the redraw now follows it.
+9. **`panels.yaml` covers four panels**: 0x001E (2.9" 168×384), **0x001C (2.6" 184×360)**,
+   0x003A (4.2" 400×300), 0x0040 (7.5" 800×480). Any other `panel_ic_type` has no drive data
+   and therefore no panel on this firmware — including presets the toolbox still offers. The
+   2.6" entry is **derived** from the 2.9" (bb_epaper's two init sequences are byte-identical
+   except TRES) and its waveforms are inherited, not yet validated on that glass.
+10. **Writing a config is not idempotent at the host level.** Re-running a splice that appends
+    drive packets produces a *second* copy (observed: 1717 → 3277 B), and `find_mode`/`find_lut`
+    would serve whichever they reach first. Tooling must clear existing
+    `0x2E`/`0x2F`/`0x30`/`0x31` before adding new ones.
 
 ---
 
