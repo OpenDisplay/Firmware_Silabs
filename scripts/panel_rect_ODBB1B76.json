@@ -1,0 +1,19 @@
+{
+ "_comment": "ODBB1B76 2026-11-02. Derived from a RENDERED 4-band pattern, not edge detection: band edges in a known pattern give the pixels-per-panel-row directly. The panel is TOP-clipped.",
+ "device": "ODBB1B76",
+ "active_x": [
+  680,
+  1190
+ ],
+ "bottom_edge_y": 930,
+ "px_per_panel_row": 3.304,
+ "true_height_px": 1269,
+ "first_visible_panel_row": 102,
+ "measured_band_edges_y": [
+  190,
+  390,
+  555,
+  755,
+  930
+ ]
+}
