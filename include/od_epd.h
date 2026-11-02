@@ -178,6 +178,16 @@ bool od_epd_is_busy(od_epd_t *e);
  * no built-in table to fall back to, and saying so is the honest answer. */
 int  od_epd_desc_from_config(od_panel_desc_t *out, uint8_t display_instance);
 
+/* Why the last od_epd_desc_from_config() call failed, packed for a one-byte
+ * debug channel: (-rc) in bits 7..5, indexed packet count in bits 4..0.
+ *
+ * This exists because all four failure branches are invisible from the host:
+ * CMD_SPI_RAW and CMD_DIRECT_WRITE_START both collapse them into one NACK, and
+ * the only other diagnostic is printf over RTT -- which needs a wired
+ * programmer. On a BLE-only device that made "the panel does not come up"
+ * unbisectable. */
+uint8_t od_epd_desc_diag(void);
+
 #ifdef __cplusplus
 }
 #endif

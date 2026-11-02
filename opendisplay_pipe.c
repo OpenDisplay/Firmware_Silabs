@@ -1,4 +1,5 @@
 #include "opendisplay_pipe.h"
+#include "od_epd.h"
 #include "opendisplay_ble.h"
 #include "opendisplay_display.h"
 #include "opendisplay_led.h"
@@ -1079,7 +1080,12 @@ static void handle_nfc_endpoint(uint8_t connection, const uint8_t *payload, uint
  * duplicate that gate and risk the two drifting apart. */
 static void spi_raw_nack(uint8_t connection, uint8_t err, uint8_t sub)
 {
-  uint8_t nack[] = { RESP_NACK, RESP_SPI_RAW, err, sub };
+  /* Byte 4 is a DIAGNOSTIC, appended rather than repurposed: existing hosts
+   * read bytes 0-1 and ignore the tail. Without it OD_ERR_SPI_RAW_PANEL covers
+   * four distinct od_epd_desc_from_config() failures with no way to tell them
+   * apart, and the only other diagnostic is printf over RTT -- which needs a
+   * wired programmer the device may not have. See od_epd_desc_diag(). */
+  uint8_t nack[] = { RESP_NACK, RESP_SPI_RAW, err, sub, od_epd_desc_diag() };
   pipe_send(connection, nack, sizeof(nack));
 }
 

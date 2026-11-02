@@ -4,17 +4,27 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* 4096 since the blob is no longer held in RAM -- od_cfg_index keeps a 192-byte
- * map and bodies are read from NVM3 on demand. The bound is now NVM3: the
- * object must fit NVM3_DEFAULT_MAX_OBJECT_SIZE (4112 = 4096 + 16-byte header)
- * and leave repack headroom inside the 24576-byte NVM region (~17%).
+/* 2096 = NVM3_DEFAULT_MAX_OBJECT_SIZE (2112) minus the 16-byte record header.
  *
- * The staging buffer below is still sized by this for the config WRITE path,
- * which is transient; see od_cfg_index.h for why nothing holds it afterwards. */
-/* 4080 = NVM3's hard per-object cap (NVM3_MAX_OBJECT_SIZE_HIGH_LIMIT = 4096)
- * minus the 16-byte record header. This is the ceiling: raising it further
- * needs the config split across multiple NVM3 objects, not a bigger number. */
-#define MAX_CONFIG_SIZE 4080
+ * I PREVIOUSLY SET THIS TO 4080 AND IT BROKE A DEVICE. The reasoning was that
+ * NVM3's hard per-object cap is 4096 (NVM3_MAX_OBJECT_SIZE_HIGH_LIMIT), so 4080
+ * must be the ceiling. That cap is a bound on the SETTING, not a promise the
+ * configured NVM3 region can store such an object: the limit that actually
+ * binds is the 24576-byte region, and nvm3_default_config.h says so in its own
+ * comment -- "3 pages (24576) is enough for max-object 2112".
+ *
+ * Measured on ODBB1B76 after OTAing a build with max-object 4096: the stored
+ * config came back as 0 bytes and every config write NACKed at the final chunk,
+ * i.e. at saveConfig's nvm3_writeData. Raising max-object changes the NVM3
+ * instance parameters, which invalidates the existing contents.
+ *
+ * To go beyond 2096 the NVM3 region has to grow, and that is not a free change:
+ * nvm3_default_config.h warns that changing size or base invalidates NVM3 and
+ * needs a chip erase, which needs a wired programmer -- not an OTA.
+ *
+ * The staging buffer below is sized by this for the config WRITE path, which is
+ * transient; see od_cfg_index.h for why nothing holds it afterwards. */
+#define MAX_CONFIG_SIZE 2096
 
 typedef struct {
   uint32_t magic;

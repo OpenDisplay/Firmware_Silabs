@@ -57,6 +57,7 @@ static_assert(offsetof(struct DisplayPanelConfig, sleep_seq) == PANEL_OFF_SLEEPS
 static uint8_t s_mode_entry_idx[OD_EPD_MAX_MODES];  /* mode -> od_cfg index */
 static uint8_t s_mode_entry_count;
 static od_epd_io_t s_io;
+static uint8_t s_desc_diag;   /* see od_epd_desc_diag() */
 
 static uint16_t rd16(const uint8_t *p)
 {
@@ -154,13 +155,23 @@ static bool io_lut_info(uint8_t slot, uint16_t *len_out)
 
 /* ------------------------------------------------------ desc from config */
 
+extern "C" uint8_t od_epd_desc_diag(void) { return s_desc_diag; }
+
+static int desc_fail(int rc)
+{
+    int n = od_cfg_index_count();
+    if (n < 0) { n = 0; }
+    s_desc_diag = (uint8_t)(((unsigned)(-rc) << 5) | ((unsigned)n & 0x1Fu));
+    return rc;
+}
+
 extern "C" int od_epd_desc_from_config(od_panel_desc_t *out, uint8_t display_instance)
 {
     const struct GlobalConfig *cfg = opendisplay_get_global_config();
     uint8_t body[CONFIG_PKT_DISPLAY_PANEL_SIZE];
 
     if (out == NULL || cfg == NULL || cfg->display_count == 0u) {
-        return -1;
+        return desc_fail(-1);
     }
     memset(out, 0, sizeof(*out));
     s_mode_entry_count = 0u;
@@ -174,7 +185,7 @@ extern "C" int od_epd_desc_from_config(od_panel_desc_t *out, uint8_t display_ins
 
     if (od_cfg_index_count() <= 0 && od_cfg_index_build() < 0) {
         printf("[OD] desc: no config index\r\n");
-        return -2;
+        return desc_fail(-2);
     }
 
     /* 0x31: the drive properties 0x20 never carried. */
@@ -190,7 +201,7 @@ extern "C" int od_epd_desc_from_config(od_panel_desc_t *out, uint8_t display_ins
     if (pe == NULL || od_cfg_read(pe, 0u, body, sizeof(body)) != sizeof(body)) {
         printf("[OD] desc: display %u has no 0x31 panel packet\r\n",
                (unsigned)display_instance);
-        return -3;
+        return desc_fail(-3);
     }
     out->busy_usable = (body[PANEL_OFF_FLAGS] & OD_PANEL_FLAG_BUSY_USABLE) != 0u;
     out->busy_idle_level = body[PANEL_OFF_IDLE];
@@ -240,8 +251,9 @@ extern "C" int od_epd_desc_from_config(od_panel_desc_t *out, uint8_t display_ins
     if (out->mode_count == 0u) {
         printf("[OD] desc: display %u has no usable 0x2E modes\r\n",
                (unsigned)display_instance);
-        return -4;
+        return desc_fail(-4);
     }
+    s_desc_diag = (uint8_t)(od_cfg_index_count() & 0x1F);   /* stage 0 = success */
     return 0;
 }
 

@@ -1,4 +1,5 @@
 #include "opendisplay_ble.h"
+#include "od_cfg_index.h"
 #include "opendisplay_net_a_adv.h"
 #include "opendisplay_config_parser.h"
 #include "opendisplay_display.h"
@@ -1630,6 +1631,22 @@ void opendisplay_ble_reload_config_from_nvm(void)
   if (!loadGlobalConfig(&s_od_global_config)) {
     printf("[OD] config: reload after save failed\r\n");
   }
+  /* REBUILD THE DRIVE INDEX, DO NOT JUST LET IT BE.
+   *
+   * od_cfg_index holds byte OFFSETS into the stored blob, and a config write
+   * moves every one of them. The index is built lazily and only when empty, so
+   * without this it keeps the offsets from the PREVIOUS config for the rest of
+   * the boot.
+   *
+   * Measured on ODBB1B76: boot_apply built the index against a config with no
+   * drive packets, the host then wrote one WITH them, and every later render
+   * still failed -- od_epd_desc_from_config could not find packet 0x31 that was
+   * demonstrably stored. The same staleness with two configs that BOTH have
+   * drive packets is worse than a failure: the offsets still resolve, just to
+   * the wrong bytes, so the panel would be driven by whatever happened to sit
+   * at the old offset. */
+  int n = od_cfg_index_build();
+  printf("[OD] config: drive index rebuilt, %d packet(s)\r\n", n);
   s_fmdn_last_window = UINT32_MAX;
   s_fmdn_last_batt_code = 0xFFu;
   s_fmdn_supported_curve = true;
