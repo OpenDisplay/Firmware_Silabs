@@ -94,8 +94,26 @@ async def run(a) -> int:
         pal = MultiPassPalette.from_calibration(cal, passes=mode.passes)
         panel = cfg.display_panels[0] if cfg.display_panels else None
         code_map = panel.code_map if panel else None
-        img = build_image(a.width, a.height, a.pattern)
-        frames = encode_frames(img, pal, code_map=code_map, dither=not a.no_dither)
+        if a.pattern == "index16":
+            # Exact palette indices, NO quantisation and NO dithering. This is
+            # the only pattern that is directly comparable to the calibration
+            # capture: the RGB patterns go through nearest-colour + diffusion,
+            # so a blotchy result from those is the dither doing its job, not a
+            # transport fault. Distinguishing the two cost an OTA cycle once.
+            import numpy as _np
+            from opendisplay.encoding.multipass import pack_pass
+            top, grid = 136, 4
+            idx = _np.zeros((a.height, a.width), _np.uint8)
+            idx[:top] = 1
+            ch, cw = (a.height - top) // grid, a.width // grid
+            for i in range(16):
+                r, c = divmod(i, grid)
+                idx[top + r * ch: top + (r + 1) * ch, c * cw:(c + 1) * cw] = i
+            frames = [pack_pass(idx, pal, p, code_map) for p in range(pal.passes)]
+        else:
+            img = build_image(a.width, a.height, a.pattern)
+            frames = encode_frames(img, pal, code_map=code_map,
+                                   dither=not a.no_dither)
         payload = b"".join(frames)
         print(f"encoded {len(frames)} frames x {len(frames[0])} B "
               f"= {len(payload)} B total (code_map {code_map})")
@@ -144,7 +162,7 @@ def main() -> int:
     ap.add_argument("--mode", type=int, default=1)
     ap.add_argument("--width", type=int, default=168)
     ap.add_argument("--height", type=int, default=384)
-    ap.add_argument("--pattern", default="swatches", choices=("swatches", "gradient"))
+    ap.add_argument("--pattern", default="index16", choices=("index16", "swatches", "gradient"))
     ap.add_argument("--no-dither", action="store_true")
     ap.add_argument("--chunk", type=int, default=180)
     return asyncio.run(run(ap.parse_args()))
