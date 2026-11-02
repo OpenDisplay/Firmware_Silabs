@@ -911,6 +911,9 @@ static void handle_config_write(uint8_t connection, const uint8_t *data, uint16_
       if (saveConfig(opendisplay_config_buf(), s_cfg_chunk.received_size)) {
         opendisplay_ble_reload_config_from_nvm();
         pipe_send(connection, ack, sizeof(ack));
+        /* After the ack: this can be a full panel refresh. See the note in
+         * opendisplay_ble_reload_config_from_nvm(). */
+        opendisplay_display_boot_apply();
       } else {
         pipe_send(connection, err, sizeof(err));
       }
@@ -931,6 +934,7 @@ static void handle_config_write(uint8_t connection, const uint8_t *data, uint16_
   if (saveConfig((uint8_t *)(void *)data, len)) {
     opendisplay_ble_reload_config_from_nvm();
     pipe_send(connection, ack, sizeof(ack));
+    opendisplay_display_boot_apply();   /* after the ack; may refresh the panel */
   } else {
     pipe_send(connection, err, sizeof(err));
   }
@@ -972,6 +976,7 @@ static void handle_config_chunk(uint8_t connection, const uint8_t *data, uint16_
     if (saveConfig(opendisplay_config_buf(), s_cfg_chunk.received_size)) {
       opendisplay_ble_reload_config_from_nvm();
       pipe_send(connection, ack, sizeof(ack));
+      opendisplay_display_boot_apply();   /* after the ack; may refresh the panel */
     } else {
       pipe_send(connection, err, sizeof(err));
     }

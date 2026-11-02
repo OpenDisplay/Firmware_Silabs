@@ -128,6 +128,113 @@ panels:
         - "@busy"
 
   # ---------------------------------------------------------------------------
+  # DERIVED FROM 0x001E, NOT MEASURED INDEPENDENTLY.
+  #
+  # bb_epaper's epd266yr_init_sequence_full and epd29yrh_init_sequence_full are
+  # byte-for-byte identical except TRES: same controller (BBEP_CHIP_UC81xx),
+  # same BTST_P/POFS/CDI/TCON/PLL bytes, same PON-then-BUSY tail. So this entry
+  # is the 0x001E entry with the resolution changed, and nothing else.
+  #
+  # TRES: 184 = 0x00B8 wide, 360 = 0x0168 tall -> "61 00 B8 01 68"
+  #       (0x001E is 168 = 0x00A8 / 384 = 0x0180 -> "61 00 A8 01 80")
+  #
+  # code_map IS THE SAME [0,1,3,2], but for the opposite reason. The 2.6"
+  # natively uses bb_epaper's u8Colors_4clr_v2, which already crosses
+  # yellow/red; the 2.9" is listed as u8Colors_4clr and had to be patched to
+  # match. Both therefore end up at the same mapping -- do not "fix" this one by
+  # copying the 2.9"'s comment, which describes a bug this panel does not have.
+  #
+  # WHAT IS NOT ESTABLISHED HERE: the waveforms. wave_colour/wave_edit were
+  # derived on the 2.9". Same controller and same 535-byte slot format, so they
+  # are expected to load, but no 16-colour result has been measured on this
+  # part. measured_drf_ms is therefore omitted rather than copied, and the
+  # temp_gate numbers below are inherited as advisory only -- the 2.9"'s gamut-
+  # vs-temperature curve was measured on 2.9" glass.
+  - id: 0x001C
+    name: EP266YR_184x360
+    part: GDEY0266F51
+    controller: JD79661
+    geometry: { width: 184, height: 360 }
+    colour:
+      scheme: BWRY            # OD_COLOR_SCHEME_BWRY = 3
+      plane_format: 2bpp_packed
+      code_map: [0, 1, 3, 2]  # bb_epaper u8Colors_4clr_v2, native on this part
+    busy:
+      usable: true
+      idle_level: 1           # BBEP_CHIP_UC81xx in bb_ep.inl: idles HIGH
+      timeout_ms: 30000
+    lut:
+      supported: true
+      enable: psr_b2_bit7     # PSR byte2 |= 0x80
+      size_bytes: 535
+    sleep_sequence:
+      - "02 00"               # POF
+      - "07 A5"               # deep sleep
+    modes:
+      - name: full
+        init: full
+        passes: 1
+      - name: colour16
+        passes: 3
+        lut_per_pass: [wave_colour, wave_edit, wave_edit]
+        vsn1_per_pass: [null, 0x14, 0x41]
+        analog_from_wave: true
+        init: colour16
+    temp_gate:
+      min_c: 18
+      max_c: 32
+      optimal_c: 25
+      policy: advise
+    init_sequences:
+      # From bb_epaper epd266yr_init_sequence_full. Contains PON (0x04) and a
+      # BUSY wait at the end, same as the 2.9".
+      full:
+        - "4D 78"
+        - "00 0F 29"            # PSR
+        - "01 07 00"            # PWRR
+        - "03 10 54 44"         # POFS
+        - "06 05 00 3F 0A 25 12 1A"   # BTST_P
+        - "50 37"               # CDI
+        - "60 02 02"            # TCON
+        - "61 00 B8 01 68"      # TRES 184x360
+        - "E7 1C"
+        - "E3 22"
+        - "B4 D0"
+        - "B5 03"
+        - "E9 01"
+        - "30 08"
+        - "04"                  # PON
+        - "@busy"
+        - "10"                  # DTM: image data register
+        - "@image"              # <- frame streams in here
+        - "12 00"               # DRF
+        - "@busy"
+      colour16:
+        - "4D 78"
+        - "00 0F A9"            # PSR with LUT_EN (0x29 | 0x80)
+        - "01 07 @w0 @w1 @w2 @w3 @w4"   # PWRR from wave header
+        - "03 10 54 44"
+        - "06 05 00 3F 0A 25 12 1A"
+        - "30 @w6"              # PLL from wave header
+        - "50 37"
+        - "60 02 02"
+        - "61 00 B8 01 68"      # TRES 184x360
+        - "E7 1C"
+        - "E3 22"
+        - "B4 D0"
+        - "B5 03"
+        - "E9 01"
+        - "82 @vcom"            # w[5] ^ 0x80
+        - "20"                  # the register that accepts a waveform
+        - "@lut"                # <- 535-byte waveform streams in here, pre-PON
+        - "10"
+        - "@image"
+        - "04"                  # PON after the frame
+        - "@busy"
+        - "12 00"
+        - "@busy"
+
+  # ---------------------------------------------------------------------------
   - id: 0x003A
     name: EP42YR_400x300
     part: GDEM042F52

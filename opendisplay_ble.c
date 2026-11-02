@@ -1653,7 +1653,17 @@ void opendisplay_ble_reload_config_from_nvm(void)
   od_buttons_init_from_config();
   opendisplay_display_park_pins();
   opendisplay_led_init();
-  opendisplay_display_boot_apply();
+  /* THE BOOT SCREEN IS NOT DRAWN HERE -- the config-write path calls
+   * opendisplay_display_boot_apply() itself, AFTER it has acked.
+   *
+   * Everything in this function has to happen before the ack, because the host
+   * may issue another command immediately and the drive index above must be
+   * current. A panel refresh does not: it takes a full refresh cycle (~20 s on
+   * the 2.9in, 35 s on the 4.2in), and doing it here pushed the config-write
+   * ack past py-opendisplay's 5 s bound. The write had actually succeeded, so
+   * the host saw a timeout on a completed operation -- the worst kind of
+   * failure signal. This only started biting once boot_apply stopped latching
+   * failed attempts and the retry became real work. */
   od_net_a_stop(s_net_a_adv_handle);
   od_fmdn_sync(sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count()));
   if (s_od_global_config.loaded && s_od_global_config.has_findmy_config
