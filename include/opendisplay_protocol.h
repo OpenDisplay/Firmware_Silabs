@@ -655,6 +655,95 @@
  * -------------------------------------------------------------------------- */
 #define CMD_NFC_ENDPOINT               0x0083u
 
+/* --------------------------------------------------------------------------
+ * @opcode: 0x0084   @name: CMD_SPI_RAW   @dir: host->device
+ * @purpose:  Debug/bring-up escape hatch: drive the panel's SPI bus directly
+ *            so register sequences, init sequences and custom waveforms can be
+ *            tried without a firmware rebuild.
+ * @request:  [0x00][0x84][sub:1][args...]
+ *              sub = 0x00 OPEN   [flags:1]
+ *                      flags bit0 = after powering the rail and configuring
+ *                                   SPI/GPIO, also run wake() +
+ *                                   sendPanelInitFull(). Default (bit0 clear)
+ *                                   brings up POWER AND PINS ONLY and sends
+ *                                   nothing, so virgin register state is
+ *                                   observable and the caller owns the whole
+ *                                   sequence.
+ *                    0x01 CMD    [cmd:1][data...]
+ *                      cmd byte is clocked with D/C low, any trailing bytes
+ *                      with D/C high (the usual command-then-parameters shape).
+ *                    0x02 DATA   [data...]
+ *                      all bytes with D/C high. Use to continue a payload that
+ *                      does not fit in one frame (see @limits).
+ *                    0x06 DATA_NOACK [data...]
+ *                      identical to DATA but emits NO response, so the host
+ *                      can stream with write-without-response. Intended for
+ *                      bulk pixel/LUT payloads where a round trip per frame
+ *                      dominates. No error can be reported; follow the burst
+ *                      with an ACKed sub-opcode to resynchronise.
+ *                    0x03 BUSY   [timeout_ms:2 LE]
+ *                    0x04 RESET  [hold_ms:1]
+ *                      drives RST low for hold_ms (clamped 1..50), then high.
+ *                    0x05 CLOSE
+ *                      sleep + power the rail down. Idempotent.
+ * @response: [0x00][0x84][sub:1][...]
+ *              OPEN/CMD/DATA/RESET/CLOSE: no extra data.
+ *              BUSY: [elapsed_ms:2 LE][busy:1]  busy = 1 if STILL busy at
+ *                    timeout (i.e. it timed out), 0 if BUSY released in time.
+ * @errors:   [0xFF][0x84][err:1][sub:1]
+ *              0x01 OD_ERR_SPI_RAW_BAD_ARGS     (missing/short args)
+ *              0x02 OD_ERR_SPI_RAW_NOT_OPEN     (CMD/DATA/BUSY/RESET w/o OPEN)
+ *              0x03 OD_ERR_SPI_RAW_NO_CONFIG    (no display configured)
+ *              0x04 OD_ERR_SPI_RAW_PANEL        (setPanelType / bad panel type)
+ *              0x05 OD_ERR_SPI_RAW_UNKNOWN_SUB
+ * @state:    OPEN starts a session that PERSISTS across commands -- this is
+ *            the whole point. A raw command that re-initialises between calls
+ *            is useless for register debugging, because the reset silently
+ *            discards whatever the previous call staged.
+ *            OPEN first aborts any in-flight direct-write transfer (they share
+ *            one panel object). A BLE disconnect force-closes the session, so
+ *            a dropped link cannot leave the rail powered or the panel driving.
+ * @limits:   one frame carries <= OD_PIPE_MAX_PAYLOAD (244) bytes total, so a
+ *            single CMD moves ~240 data bytes; chain 0x02 DATA for more.
+ *            BUSY timeout is clamped to <= 90000 ms.
+ * @security: no special case -- it sits in the normal dispatch switch and so
+ *            inherits the standard gate: when encryption is enabled an
+ *            unauthenticated caller gets RESP_AUTH_REQUIRED and never reaches
+ *            the handler.
+ * @caution:  this bypasses every driver-level safety check. A malformed
+ *            sequence can leave the panel powered, mid-refresh, or driven with
+ *            a DC-imbalanced waveform, which degrades e-paper over time.
+ *            Prefer an explicit CLOSE rather than relying on disconnect.
+ * @targets:  Silabs      (NOT Firmware, NOT NRF54, NOT NRF52811)
+ * -------------------------------------------------------------------------- */
+#define CMD_SPI_RAW                    0x0084u
+
+/* CMD_SPI_RAW sub-opcodes (request byte 2). */
+#define SPI_RAW_SUB_OPEN               0x00u
+#define SPI_RAW_SUB_CMD                0x01u
+#define SPI_RAW_SUB_DATA               0x02u
+#define SPI_RAW_SUB_BUSY               0x03u
+#define SPI_RAW_SUB_RESET              0x04u
+#define SPI_RAW_SUB_CLOSE              0x05u
+/* 0x06 DATA_NOACK: same as DATA but sends NO response, so the host can stream
+ * with BLE write-without-response instead of paying a round trip per frame.
+ * This is how CMD_DIRECT_WRITE_DATA (0x71) already moves bulk pixels; the
+ * ACK-per-frame cost dominated an early 16-colour render (54 s for 327 frames,
+ * i.e. ~165 ms each, almost all of it latency rather than transfer).
+ * Errors cannot be reported, by construction. Follow a burst with any ACKed
+ * sub-opcode (e.g. BUSY) to resynchronise and confirm the session is alive. */
+#define SPI_RAW_SUB_DATA_NOACK         0x06u
+
+/* CMD_SPI_RAW OPEN flags (request byte 3). */
+#define SPI_RAW_OPEN_FLAG_PANEL_INIT   0x01u   /* also wake()+sendPanelInitFull() */
+
+/* CMD_SPI_RAW error codes (NACK data[0]). */
+#define OD_ERR_SPI_RAW_BAD_ARGS        0x01u
+#define OD_ERR_SPI_RAW_NOT_OPEN        0x02u
+#define OD_ERR_SPI_RAW_NO_CONFIG       0x03u
+#define OD_ERR_SPI_RAW_PANEL           0x04u
+#define OD_ERR_SPI_RAW_UNKNOWN_SUB     0x05u
+
 /* ==========================================================================
  * SECTION 2 -- RESPONSE / STATUS BYTES (8-bit)
  * ==========================================================================
@@ -695,6 +784,9 @@
 
 /* NFC endpoint echo byte (was 0x82u in protocol v1; see CMD_NFC_ENDPOINT). */
 #define RESP_NFC_ENDPOINT              0x83u
+
+/* Raw-SPI debug echo byte (see CMD_SPI_RAW). */
+#define RESP_SPI_RAW                   0x84u
 
 /* @collision: RESPONSE byte 0x73 has two meanings, disambiguated by direction
  *   and context:

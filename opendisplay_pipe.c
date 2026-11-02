@@ -1071,6 +1071,97 @@ static void handle_nfc_endpoint(uint8_t connection, const uint8_t *payload, uint
   }
 }
 
+/* CMD_SPI_RAW 0x0084 -- raw SPI debug session. See opendisplay_protocol.h.
+ *
+ * Nothing here touches authentication: this handler is reached only from the
+ * dispatch() switch, which already rejects unauthenticated callers with
+ * RESP_AUTH_REQUIRED when encryption is enabled. Adding a bespoke check would
+ * duplicate that gate and risk the two drifting apart. */
+static void spi_raw_nack(uint8_t connection, uint8_t err, uint8_t sub)
+{
+  uint8_t nack[] = { RESP_NACK, RESP_SPI_RAW, err, sub };
+  pipe_send(connection, nack, sizeof(nack));
+}
+
+static void handle_spi_raw(uint8_t connection, const uint8_t *payload, uint16_t payload_len)
+{
+  uint8_t sub;
+  const uint8_t *args;
+  uint16_t args_len;
+  int rc = 0;
+
+  if (payload == NULL || payload_len < 1u) {
+    spi_raw_nack(connection, OD_ERR_SPI_RAW_BAD_ARGS, 0xFFu);
+    return;
+  }
+  sub = payload[0];
+  args = &payload[1];
+  args_len = (uint16_t)(payload_len - 1u);
+
+  switch (sub) {
+    case SPI_RAW_SUB_OPEN: {
+      /* flags byte is optional; absent == 0 == pins/power only. */
+      bool want_init = (args_len >= 1u)
+                       && ((args[0] & SPI_RAW_OPEN_FLAG_PANEL_INIT) != 0u);
+      rc = opendisplay_display_spi_raw_open(want_init);
+      break;
+    }
+    case SPI_RAW_SUB_CMD:
+      rc = opendisplay_display_spi_raw_cmd(args, args_len);
+      break;
+    case SPI_RAW_SUB_DATA:
+      rc = opendisplay_display_spi_raw_data(args, args_len);
+      break;
+    case SPI_RAW_SUB_DATA_NOACK:
+      /* Bulk streaming path: write and return WITHOUT replying, so the host
+       * can use write-without-response and avoid a round trip per frame.
+       * Returning early is the whole point -- falling through to the ACK
+       * below would reintroduce the latency this exists to remove. */
+      (void)opendisplay_display_spi_raw_data(args, args_len);
+      return;
+    case SPI_RAW_SUB_BUSY: {
+      uint32_t timeout_ms;
+      uint16_t elapsed = 0u;
+      bool still_busy = false;
+      if (args_len < 2u) {
+        spi_raw_nack(connection, OD_ERR_SPI_RAW_BAD_ARGS, sub);
+        return;
+      }
+      timeout_ms = (uint32_t)args[0] | ((uint32_t)args[1] << 8);
+      rc = opendisplay_display_spi_raw_busy(timeout_ms, &elapsed, &still_busy);
+      if (rc == 0) {
+        uint8_t ok[] = { RESP_ACK, RESP_SPI_RAW, sub,
+                         (uint8_t)(elapsed & 0xFFu),
+                         (uint8_t)((elapsed >> 8) & 0xFFu),
+                         (uint8_t)(still_busy ? 1u : 0u) };
+        pipe_send(connection, ok, sizeof(ok));
+        return;
+      }
+      break;
+    }
+    case SPI_RAW_SUB_RESET:
+      rc = opendisplay_display_spi_raw_reset(args_len >= 1u ? args[0] : 10u);
+      break;
+    case SPI_RAW_SUB_CLOSE:
+      opendisplay_display_spi_raw_close();
+      rc = 0;
+      break;
+    default:
+      spi_raw_nack(connection, OD_ERR_SPI_RAW_UNKNOWN_SUB, sub);
+      return;
+  }
+
+  if (rc != 0) {
+    /* the display layer returns the OD_ERR_SPI_RAW_* code negated */
+    spi_raw_nack(connection, (uint8_t)(-rc), sub);
+    return;
+  }
+  {
+    uint8_t ok[] = { RESP_ACK, RESP_SPI_RAW, sub };
+    pipe_send(connection, ok, sizeof(ok));
+  }
+}
+
 static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, uint16_t payload_len)
 {
   uint8_t auth_rsp[32];
@@ -1168,6 +1259,9 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
     }
     case CMD_NFC_ENDPOINT:
       handle_nfc_endpoint(connection, payload, payload_len);
+      break;
+    case CMD_SPI_RAW:
+      handle_spi_raw(connection, payload, payload_len);
       break;
     case CMD_DIRECT_WRITE_START:
       handle_direct_write_start(connection, payload, payload_len);
@@ -1269,6 +1363,9 @@ void opendisplay_pipe_on_connection_closed(void)
   s_long_write_conn = 0xFFu;
   cfg_chunk_reset();
   nfc_write_chunk_reset();
+  /* Also force-closes any CMD_SPI_RAW session: abort cuts the panel rail and
+   * clears the raw-session flag, so a dropped link cannot leave the display
+   * powered or mid-drive. */
   opendisplay_display_abort();
 }
 

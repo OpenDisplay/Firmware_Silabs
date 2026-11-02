@@ -4,6 +4,7 @@
 #include "opendisplay_config_parser.h"
 #include "opendisplay_constants.h"
 #include "opendisplay_epd_map.h"
+#include "opendisplay_protocol.h"   /* OD_ERR_SPI_RAW_* for the raw SPI session */
 #include "opendisplay_runtime.h"
 #include "bb_epaper.h"
 #include "em_cmu.h"
@@ -22,6 +23,11 @@ extern "C" {
 
 static BBEPAPER s_epd;
 static bool s_active;
+/* Raw SPI debug session (CMD_SPI_RAW). Declared up here with the other module
+ * state so opendisplay_display_abort() can clear it: abort cuts the power
+ * rail, so leaving this flag set would advertise a live session whose pins are
+ * already dead. See the CMD_SPI_RAW block at the end of this file. */
+static bool s_spi_raw_open;
 static uint32_t s_total_bytes;
 static uint32_t s_written_bytes;
 static uint32_t s_dw_chunk_n;
@@ -575,11 +581,15 @@ static bool wait_for_refresh(uint32_t timeout_ms)
 
 extern "C" void opendisplay_display_abort(void)
 {
-  if (s_active) {
+  if (s_active || s_spi_raw_open) {
     s_epd.sleep(DEEP_SLEEP);
   }
   display_power_set(false);
   s_active = false;
+  /* Abort cuts the rail, so a raw-SPI session is over whether it asked to be
+   * or not; leaving the flag set would let later CMD/DATA calls clock bytes
+   * into an unpowered panel and silently "succeed". */
+  s_spi_raw_open = false;
   s_total_bytes = 0;
   s_written_bytes = 0;
   s_dw_chunk_n = 0;
@@ -892,4 +902,167 @@ extern "C" int opendisplay_display_direct_write_end(const uint8_t *payload, uint
     *refresh_ok = ok;
   }
   return 0;
+}
+
+/* ==========================================================================
+ * CMD_SPI_RAW 0x0084 -- raw SPI debug session (write-only)
+ *
+ * Exists so register sequences, init sequences and custom waveforms can be
+ * tried over BLE without a firmware rebuild.
+ *
+ * The session PERSISTS across calls on purpose. A raw interface that
+ * re-initialises per command is useless for register debugging: the reset
+ * silently discards whatever the previous call staged, so experiments appear
+ * to "do nothing" for reasons that have nothing to do with the registers under
+ * test. (Learned the hard way on the Spectra 6 lab firmware, where the
+ * existing `reg` command flushed and reset the panel on every call.)
+ *
+ * Write-only: bb_epaper exposes writeCmd/writeData/isBusy but no SPI read, and
+ * reading would require bit-banging half-duplex on MOSI. Sub-opcode 0x06 is
+ * reserved for that if it is ever wanted.
+ * ========================================================================== */
+
+extern "C" bool opendisplay_display_spi_raw_is_open(void)
+{
+  return s_spi_raw_open;
+}
+
+extern "C" int opendisplay_display_spi_raw_open(bool want_panel_init)
+{
+  const struct DisplayConfig *d = display_cfg();
+  int panel;
+
+  if (d == nullptr) {
+    return -OD_ERR_SPI_RAW_NO_CONFIG;
+  }
+  panel = opendisplay_map_epd(d->panel_ic_type);
+  if (panel == EP_PANEL_UNDEFINED) {
+    return -OD_ERR_SPI_RAW_PANEL;
+  }
+
+  /* Direct-write and raw share one BBEPAPER instance, so a raw session must
+   * take ownership rather than interleave with an in-flight transfer. */
+  opendisplay_display_abort();
+
+  display_power_set(true);
+  s_epd = BBEPAPER();
+  if (s_epd.setPanelType(panel) != BBEP_SUCCESS) {
+    display_power_set(false);
+    return -OD_ERR_SPI_RAW_PANEL;
+  }
+  s_epd.setRotation((int)d->rotation * 90);
+  s_epd.initIO(d->dc_pin, d->reset_pin, d->busy_pin, d->cs_pin,
+               d->data_pin, d->clk_pin, 0);
+
+  /* Default is pins-and-power only: nothing is clocked out, so the caller can
+   * observe virgin register state and own the entire sequence. */
+  if (want_panel_init) {
+    s_epd.wake();
+    s_epd.sendPanelInitFull();
+  }
+  s_spi_raw_open = true;
+  printf("[OD] spi_raw open panel=%d init=%d\r\n", panel, (int)want_panel_init);
+  return 0;
+}
+
+extern "C" int opendisplay_display_spi_raw_cmd(const uint8_t *data, uint16_t len)
+{
+  if (!s_spi_raw_open) {
+    return -OD_ERR_SPI_RAW_NOT_OPEN;
+  }
+  if (data == nullptr || len == 0u) {
+    return -OD_ERR_SPI_RAW_BAD_ARGS;
+  }
+  s_epd.writeCmd(data[0]);
+  if (len > 1u) {
+    /* writeData takes a non-const pointer; the payload buffer is ours and the
+     * driver does not retain it. */
+    s_epd.writeData((uint8_t *)(void *)&data[1], (int)(len - 1u));
+  }
+  return 0;
+}
+
+extern "C" int opendisplay_display_spi_raw_data(const uint8_t *data, uint16_t len)
+{
+  if (!s_spi_raw_open) {
+    return -OD_ERR_SPI_RAW_NOT_OPEN;
+  }
+  if (data == nullptr || len == 0u) {
+    return -OD_ERR_SPI_RAW_BAD_ARGS;
+  }
+  s_epd.writeData((uint8_t *)(void *)data, (int)len);
+  return 0;
+}
+
+extern "C" int opendisplay_display_spi_raw_busy(uint32_t timeout_ms,
+                                                uint16_t *elapsed_ms_out,
+                                                bool *still_busy_out)
+{
+  uint32_t t0;
+  uint32_t waited = 0u;
+
+  if (!s_spi_raw_open) {
+    return -OD_ERR_SPI_RAW_NOT_OPEN;
+  }
+  if (timeout_ms > 90000u) {
+    timeout_ms = 90000u;   /* matches the driver's own refresh ceiling */
+  }
+  t0 = sl_sleeptimer_get_tick_count();
+  while (s_epd.isBusy()) {
+    waited = sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count() - t0);
+    if (waited >= timeout_ms) {
+      break;
+    }
+    sl_sleeptimer_delay_millisecond(2);
+  }
+  waited = sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count() - t0);
+  if (elapsed_ms_out != nullptr) {
+    *elapsed_ms_out = (uint16_t)((waited > 0xFFFFu) ? 0xFFFFu : waited);
+  }
+  if (still_busy_out != nullptr) {
+    *still_busy_out = s_epd.isBusy();
+  }
+  return 0;
+}
+
+extern "C" int opendisplay_display_spi_raw_reset(uint8_t hold_ms)
+{
+  const struct DisplayConfig *d = display_cfg();
+  GPIO_Port_TypeDef port;
+  uint8_t pin;
+
+  if (!s_spi_raw_open) {
+    return -OD_ERR_SPI_RAW_NOT_OPEN;
+  }
+  if (d == nullptr) {
+    return -OD_ERR_SPI_RAW_NO_CONFIG;
+  }
+  /* Drive RST directly rather than via wake(): wake() also performs a
+   * busy-wait and, on some panel drivers, sends init bytes -- which would
+   * defeat the point of a raw reset. */
+  if (!decode_pin(d->reset_pin, &port, &pin)) {
+    return -OD_ERR_SPI_RAW_BAD_ARGS;
+  }
+  if (hold_ms < 1u) {
+    hold_ms = 1u;
+  } else if (hold_ms > 50u) {
+    hold_ms = 50u;
+  }
+  CMU_ClockEnable(cmuClock_GPIO, true);
+  GPIO_PinModeSet(port, pin, gpioModePushPull, 0u);
+  sl_sleeptimer_delay_millisecond(hold_ms);
+  GPIO_PinOutSet(port, pin);
+  sl_sleeptimer_delay_millisecond(hold_ms);
+  return 0;
+}
+
+extern "C" void opendisplay_display_spi_raw_close(void)
+{
+  if (!s_spi_raw_open) {
+    return;
+  }
+  s_epd.sleep(DEEP_SLEEP);
+  display_power_set(false);
+  s_spi_raw_open = false;
+  printf("[OD] spi_raw close\r\n");
 }

@@ -1,0 +1,265 @@
+# Panel descriptions -- the single source of truth for how a panel is driven.
+#
+# WHY THIS FILE EXISTS. Panel behaviour currently lives in a vendored C library
+# (bb_epaper), a per-target mapping switch, and a hand-mirrored host table
+# (py-opendisplay display_palettes.py). Nothing forces those three to agree, and a
+# library bump has already silently changed init traffic on four shipped panels
+# (see Firmware_Unified targets/nordic-zephyr/PANEL_DIVERGENCE.md). This file makes
+# panel behaviour a reviewable, diffable artifact instead.
+#
+# HAND-AUTHORED ON PURPOSE. The sequences below were transcribed by hand from
+# bb_epaper and then verified on hardware. They were NOT machine-extracted: the
+# row-to-enum identity in bb_ep.inl is ambiguous (`// EP154_200x200` and
+# `// EP73_800x480` each label two different rows, and two commented-out rows break
+# positional alignment), so a script cannot attribute a row to a panel with
+# confidence. See tools/derive_panel_modes.py for what IS safely derivable.
+#
+# SCOPE OF THIS BRANCH. Only the three BWRY panels that have been characterised on
+# hardware. bb_epaper is removed from this branch, so no other panel works here.
+# panel_ic_type values match opendisplay_epd_map.c so existing configs keep working.
+
+version: 1
+
+panels:
+
+  # ---------------------------------------------------------------------------
+  - id: 0x001E
+    name: EP29YR_168x384
+    part: GDEY029F51H
+    controller: JD79661
+    geometry: { width: 168, height: 384 }
+    colour:
+      scheme: BWRY            # OD_COLOR_SCHEME_BWRY = 3
+      plane_format: 2bpp_packed
+      # bb_epaper u8Colors_4clr. HARDWARE ORDER IS black,white,RED,YELLOW while
+      # BBEP_YELLOW==2 / BBEP_RED==3, which is why the lab firmware had a
+      # yellow/red swap: the enum order and the panel order disagree.
+      code_map: [0, 1, 3, 2]  # index = logical BWRY, value = panel 2-bit code
+    busy:
+      usable: true
+      timeout_ms: 30000
+    lut:
+      supported: true
+      enable: psr_b2_bit7     # PSR byte2 |= 0x80
+      placement: pre_pon      # upload to 0x20 BEFORE power-on
+      size_bytes: 535
+    modes:
+      - name: full
+        init: full
+        passes: 1
+      - name: colour16
+        passes: 3
+        # Each pass uses a different LUT *and* different pixel data; pass N's
+        # code comes from palette[cell][N]. Passes 1-2 patch wave header byte 3
+        # (vsn1) to 0x14 / 0x41.
+        lut_per_pass: [wave_colour, wave_edit, wave_edit]
+        vsn1_per_pass: [null, 0x14, 0x41]
+        # The analog drive parameters come FROM THE WAVE HEADER, not from a fixed
+        # byte sequence: PWRR <- w[0..4], PLL <- w[6], VCOM <- w[5]^0x80. A mode's
+        # init is therefore not always a constant string.
+        analog_from_wave: true
+        init: colour16
+        measured_drf_ms: [20637, 1823, 1823]
+    temp_gate:
+      min_c: 18
+      max_c: 32
+      optimal_c: 25
+      policy: advise
+      # Measured: gamut hull peaks near 25 C (3828), falls to 2796 at 38.3 C
+      # (-27%) and 3289 at 16.6 C. Non-monotonic -- a linear fit over the cold
+      # half predicts the wrong thing.
+    init_sequences:
+      # From bb_epaper epd29yrh_init_sequence_full. NOTE this sequence contains
+      # PON (0x04) and a BUSY wait at the end.
+      full:
+        - "4D 78"
+        - "00 0F 29"            # PSR
+        - "01 07 00"            # PWRR
+        - "03 10 54 44"         # POFS
+        - "06 05 00 3F 0A 25 12 1A"   # BTST_P
+        - "50 37"               # CDI
+        - "60 02 02"            # TCON
+        - "61 00 A8 01 80"      # TRES 168x384
+        - "E7 1C"
+        - "E3 22"
+        - "B4 D0"
+        - "B5 03"
+        - "E9 01"
+        - "30 08"
+        - "04"                  # PON
+        - "@busy"
+      # 16-colour init: same register set but LUT_EN set and analog params taken
+      # from the wave header. PON is issued by the driver AFTER the image write.
+      colour16:
+        - "4D 78"
+        - "00 0F A9"            # PSR with LUT_EN (0x29 | 0x80)
+        - "01 07 @w0 @w1 @w2 @w3 @w4"   # PWRR from wave header
+        - "03 10 54 44"
+        - "06 05 00 3F 0A 25 12 1A"
+        - "30 @w6"              # PLL from wave header
+        - "50 37"
+        - "60 02 02"
+        - "61 00 A8 01 80"
+        - "E7 1C"
+        - "E3 22"
+        - "B4 D0"
+        - "B5 03"
+        - "E9 01"
+        - "82 @vcom"            # w[5] ^ 0x80
+
+  # ---------------------------------------------------------------------------
+  - id: 0x003A
+    name: EP42YR_400x300
+    part: GDEM042F52
+    controller: JD7966x
+    geometry: { width: 400, height: 300 }
+    colour:
+      scheme: BWRY
+      plane_format: 2bpp_packed
+      code_map: [0, 1, 3, 2]   # u8Colors_4clr_v2
+    busy:
+      # MEASURED UNUSABLE: reads busy immediately after power-up with nothing
+      # sent, and never releases after DRF. bb_epaper flags this
+      # BBEP_SKIP_BUSY_WAIT; that flag was an undocumented local patch to the
+      # vendored tree. Sequence on fixed delays instead.
+      usable: false
+      fixed_delay_ms: 35000
+    lut:
+      supported: true
+      enable: psr_b2_bit7      # PSR b2 = 0x09 | 0x80
+      placement: pre_pon
+      size_bytes: 535
+      # Proven by a 4-arm control: the PSR bit ALONE is inert (chroma <= 3.1,
+      # i.e. noise), while two different waveforms render completely differently
+      # (chroma 23.5 / 49.6 / 15.0). A stock-vs-LUT A/B alone is NOT sufficient.
+    modes:
+      - name: full
+        init: full
+        passes: 1
+      - name: colour16
+        passes: 3
+        lut_per_pass: [wave_colour, wave_edit, wave_edit]
+        vsn1_per_pass: [null, 0x14, 0x41]
+        analog_from_wave: true
+        init: colour16
+    init_sequences:
+      # bb_epaper epd42yr_init_full. PON is NOT included -- the caller issues it
+      # after the image write, and BUSY is unusable so there are no @busy marks.
+      full:
+        - "4D 78"
+        - "00 0F 09"            # PSR
+        - "01 07 00 22 78 0A 22"
+        - "03 10 36 44"
+        - "06 0F 0A 2F 25 22 2E 21"
+        - "30 08"
+        - "41 00"
+        - "50 37"
+        - "60 02 02"
+        - "61 01 90 01 2C"      # TRES 400x300
+        - "65 00 00 00 00"
+        - "E7 1C"
+        - "E3 22"
+        - "E0 00"
+        - "B4 D0"
+        - "B5 03"
+        - "E9 01"
+      colour16:
+        - "4D 78"
+        - "00 0F 89"            # PSR with LUT_EN (0x09 | 0x80)
+        - "01 07 @w0 @w1 @w2 @w3 @w4"
+        - "03 10 36 44"
+        - "06 0F 0A 2F 25 22 2E 21"
+        - "30 @w6"
+        - "41 00"
+        - "50 37"
+        - "60 02 02"
+        - "61 01 90 01 2C"
+        - "65 00 00 00 00"
+        - "E7 1C"
+        - "E3 22"
+        - "E0 00"
+        - "B4 D0"
+        - "B5 03"
+        - "E9 01"
+        - "82 @vcom"
+
+  # ---------------------------------------------------------------------------
+  - id: 0x0040
+    name: EP75YR_800x480
+    part: GDEM075F52
+    controller: JD7966x
+    geometry: { width: 800, height: 480 }
+    colour:
+      scheme: BWRY
+      plane_format: 2bpp_packed
+      code_map: [0, 1, 3, 2]   # u8Colors_4clr_v2
+    busy:
+      usable: true             # unlike the 4.2": measured releasing at ~20.2 s
+      timeout_ms: 40000
+    lut:
+      supported: true
+      enable: psr_b2_bit7      # PSR b2 = 0x29 | 0x80
+      # THE IMPORTANT ONE. Uploading to 0x20 before PON -- the order the 2.9" and
+      # 4.2" use -- is SILENTLY DISCARDED on this panel: two different waves then
+      # render identically to within 0.2/255, which looks like a clean negative
+      # and is not. The wave must go after the ENTIRE init including the
+      # 0xE0/0xE6/0xA5 booster tail. Proof: each wave then plays at its own
+      # intrinsic length (internal 20244 ms, colour 20909 ms, edit 1862 ms --
+      # the 2.9" measures 1823 ms for that same edit wave).
+      placement: post_init
+      size_bytes: 535
+    modes:
+      - name: full
+        init: full
+        passes: 1
+      - name: colour16
+        passes: 3
+        lut_per_pass: [wave_colour, wave_edit, wave_edit]
+        vsn1_per_pass: [null, 0x14, 0x41]
+        analog_from_wave: false   # this panel's init has no PWRR/VCOM registers
+        init: colour16
+        measured_drf_ms: [20895, 1862, 1862]
+    init_sequences:
+      # bb_epaper epd75yr_init_full. PON sits INSIDE the init, followed by the
+      # booster tail. BBEP_NEEDS_EXTRA_INIT: bb_epaper re-sends this whole
+      # sequence before EVERY image write, otherwise the writes are ignored.
+      full: &init75
+        - "00 0F 29"            # PSR
+        - "06 0F 8B 93 A1"      # BTST (4 bytes, not 7)
+        - "41 00"
+        - "50 37"
+        - "60 02 02"
+        - "61 03 20 01 E0"      # TRES 800x480
+        - "62 98 98 98 75 CA B2 98 7E"
+        - "65 00 00 00 00"
+        - "E7 1C"
+        - "E3 00"
+        - "E9 01"
+        - "30 08"
+        - "04"                  # PON
+        - "@busy"
+        - "E0 02"
+        - "E6 5A"
+        - "A5 00"
+        - "@busy"
+      # Identical registers but with LUT_EN set; the LUT is pushed after the
+      # whole thing (placement: post_init).
+      colour16:
+        - "00 0F A9"            # PSR with LUT_EN
+        - "06 0F 8B 93 A1"
+        - "41 00"
+        - "50 37"
+        - "60 02 02"
+        - "61 03 20 01 E0"
+        - "62 98 98 98 75 CA B2 98 7E"
+        - "65 00 00 00 00"
+        - "E7 1C"
+        - "E3 00"
+        - "E9 01"
+        - "30 08"
+        - "04"
+        - "@busy"
+        - "E0 02"
+        - "E6 5A"
+        - "A5 00"
+        - "@busy"
