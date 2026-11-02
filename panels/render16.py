@@ -132,11 +132,19 @@ async def run(a) -> int:
             print(f"  device says {passes}, config says {mode.passes} -- aborting")
             return 1
 
+        # A PASS BOUNDARY IS A REFRESH, NOT A STALL, AND IT CAN LAND ON ANY
+        # CHUNK. The device finishes a pass -- power on, refresh, wait -- before
+        # it acknowledges the chunk that completed the frame. 30 s was enough
+        # for the 2.9in (20637 ms measured) and silently too short for the 4.2in,
+        # whose BUSY line is unusable so panels.yaml drives it on a 35000 ms
+        # fixed delay: the upload aborted mid-transfer on a perfectly healthy
+        # panel. Budget a whole refresh for every chunk rather than guessing
+        # which one crosses a boundary.
         sent = 0
         for i in range(0, len(payload), a.chunk):
             part = payload[i:i + a.chunk]
             await dev._write((0x0071).to_bytes(2, "big") + part)
-            rr = await dev._read(timeout=30.0)
+            rr = await dev._read(timeout=a.ack_timeout)
             if not rr or rr[0] != 0x00:
                 print(f"DATA rejected at {sent} B: {rr.hex(' ')}")
                 return 1
@@ -165,6 +173,10 @@ def main() -> int:
     ap.add_argument("--pattern", default="index16", choices=("index16", "swatches", "gradient"))
     ap.add_argument("--no-dither", action="store_true")
     ap.add_argument("--chunk", type=int, default=180)
+    ap.add_argument("--ack-timeout", type=float, default=120.0,
+                    help="per-chunk ack bound. Must exceed one panel refresh: "
+                         "any chunk can be the one that completes a frame. The "
+                         "4.2in waits a 35 s fixed delay, the 2.9in ~21 s.")
     return asyncio.run(run(ap.parse_args()))
 
 
