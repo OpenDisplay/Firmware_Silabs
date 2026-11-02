@@ -281,21 +281,36 @@ those bytes as a length will log a spurious mismatch.
 
 ## 7. What was verified on hardware
 
-| Check | Result |
+Every panel `panels.yaml` describes has been migrated and driven through the full
+`0x0085` path. Frame size is `width × height / 4` (2bpp), and the device recomputes it from
+its own config — a geometry mismatch is rejected as `OD_ERR_DRIVE_BAD_SIZE` rather than
+rendered skewed, so an accepted transfer is itself a geometry check.
+
+| Unit | Panel | ic | Config | 16-colour render |
+|---|---|---|---|---|
+| ODBB1B76 | 2.9" GDEY029F51H | `0x001E` | 2205 B | 48384 B — **photographed**, clean 4×4 grid |
+| ODBF2156 | 2.9" GDEY029F51H | `0x001E` | 2335 B | 48384 B — END + refresh |
+| OD58FFC4 | 2.6" GDEY0266F51 | `0x001C` | 1717 B | 49680 B — END + refresh |
+| ODCF0ED5 | 4.2" GDEM042F52 | `0x003A` | 2205 B | 90000 B — END + refresh |
+| ODBF064E | 7.5" GDEM075F52 | `0x0040` | 2205 B | 288000 B — END + refresh |
+
+| Other check | Result |
 |---|---|
 | `bb_epaper` symbols in ELF | 0 |
-| 16-colour render, 2.9" (ODBB1B76) | 3 passes, 48384 B, photographed as a clean 4×4 grid |
-| 16-colour render, 2.9" (ODBF2156) | 3 passes, 48384 B, END + refresh notification |
-| 16-colour render, 4.2" (ODCF0ED5) | 3 passes, 90000 B, END + refresh notification |
-| NVM3 growth preserves key + config | 3 units migrated, all authenticated afterwards |
+| NVM3 growth preserves key + config | every unit above authenticated after OTA |
 | Config read-back | byte-exact after the `pipe_send_raw` retry fix |
 | Sequence executor | `seq_conformance` C vs Python model |
 | Config index | `panels/cfgtest/`, mutation-tested |
 
-**Caveat the reviewers should weigh:** only ODBB1B76 has been confirmed *photographically*.
-The other two were confirmed at protocol level only — the rig camera is not aimed at them.
-In this project, protocol-level success has repeatedly reported a working transfer while the
-panel showed something wrong.
+**Caveat the reviewers should weigh:** only **ODBB1B76** has been confirmed
+*photographically*. The other four are protocol-level only — the rig camera is not aimed at
+them. In this project, protocol-level success has repeatedly reported a working transfer
+while the panel showed something wrong. Treat the four as "the device accepted and executed
+three passes", not as "the colours are right".
+
+Two of them additionally carry **unvalidated waveforms**: the 2.6" inherits the 2.9"'s
+`wave_colour`/`wave_edit` (derived entry, see §8.9), and every unit except ODBB1B76 carries a
+borrowed palette (§8.2).
 
 ---
 
