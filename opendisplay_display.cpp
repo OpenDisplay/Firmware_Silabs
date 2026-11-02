@@ -627,6 +627,22 @@ static int dw_stream_raw_bytes(const uint8_t *payload, uint32_t payload_len)
         chunk = to_plane_end;
       }
     }
+    /* NEVER LET A CHUNK STRADDLE A PASS BOUNDARY. The pass advances after the
+     * write, so bytes past the boundary inside the same chunk would be clocked
+     * into the PREVIOUS pass's frame and every later pass would be offset.
+     *
+     * This is not hypothetical: the host streams 180-byte chunks and a frame is
+     * 16128 bytes, so chunk 90 crosses the pass-0/pass-1 boundary. The panel
+     * rendered a plausible image made of smeared blobs rather than the 4x4 grid
+     * that was sent -- wrong, but not obviously wrong, which is the failure
+     * mode worth engineering against. */
+    if (s_frame_bytes > 0u && s_drive_passes > 1u) {
+      uint32_t to_frame_end =
+          (uint32_t)(s_drive_pass + 1u) * s_frame_bytes - s_written_bytes;
+      if (chunk > to_frame_end) {
+        chunk = to_frame_end;
+      }
+    }
     if (chunk > rem) {
       chunk = rem;
     }
