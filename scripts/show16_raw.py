@@ -164,6 +164,23 @@ class Raw:
                 self.frames += 1
                 pending += 1
 
+    async def data(self, payload, stream=False):
+        """Data bytes with NO command byte.
+
+        Needed because a config sequence sends the register as an ordinary step
+        ("10" for the image, "20" for the waveform) and then hits a marker that
+        streams the body. Folding the register into this call would re-send it
+        and put the panel one byte out of step.
+        """
+        if not payload:
+            return
+        if stream:
+            await self._stream(payload)
+            await self._call(SUB_BUSY, bytes([0x64, 0x00]), timeout=20)
+            return
+        for i in range(0, len(payload), self.chunk):
+            await self._call(SUB_DATA, payload[i:i + self.chunk])
+
     async def cmd(self, c, data=b"", stream=False):
         """Command byte plus optional inline data, chunking the tail."""
         head = data[: self.chunk]

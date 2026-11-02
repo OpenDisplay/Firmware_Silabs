@@ -37,12 +37,19 @@ panels:
       code_map: [0, 1, 3, 2]  # index = logical BWRY, value = panel 2-bit code
     busy:
       usable: true
+      idle_level: 1           # BBEP_CHIP_UC81xx in bb_ep.inl: idles HIGH
       timeout_ms: 30000
     lut:
       supported: true
       enable: psr_b2_bit7     # PSR byte2 |= 0x80
-      placement: pre_pon      # upload to 0x20 BEFORE power-on
       size_bytes: 535
+      # NO `placement` FIELD ANY MORE. Placement is the position of @lut in the
+      # sequence below, which is where it actually takes effect. See the 7.5"
+      # entry for why that distinction is not cosmetic.
+    # Shared by every mode: power off, then deep sleep (bb_ep.inl UC81xx tail).
+    sleep_sequence:
+      - "02 00"               # POF
+      - "07 A5"               # deep sleep
     modes:
       - name: full
         init: full
@@ -88,8 +95,13 @@ panels:
         - "30 08"
         - "04"                  # PON
         - "@busy"
+        - "10"                  # DTM: image data register
+        - "@image"              # <- frame streams in here
+        - "12 00"               # DRF
+        - "@busy"
       # 16-colour init: same register set but LUT_EN set and analog params taken
-      # from the wave header. PON is issued by the driver AFTER the image write.
+      # from the wave header. PON is issued AFTER the image write, which is also
+      # what makes @lut below a "before power-on" upload.
       colour16:
         - "4D 78"
         - "00 0F A9"            # PSR with LUT_EN (0x29 | 0x80)
@@ -106,6 +118,14 @@ panels:
         - "B5 03"
         - "E9 01"
         - "82 @vcom"            # w[5] ^ 0x80
+        - "20"                  # the register that accepts a waveform
+        - "@lut"                # <- 535-byte waveform streams in here, pre-PON
+        - "10"
+        - "@image"
+        - "04"                  # PON after the frame
+        - "@busy"
+        - "12 00"
+        - "@busy"
 
   # ---------------------------------------------------------------------------
   - id: 0x003A
@@ -123,15 +143,18 @@ panels:
       # BBEP_SKIP_BUSY_WAIT; that flag was an undocumented local patch to the
       # vendored tree. Sequence on fixed delays instead.
       usable: false
+      idle_level: 1            # moot while usable=false, but this is the sense
       fixed_delay_ms: 35000
     lut:
       supported: true
       enable: psr_b2_bit7      # PSR b2 = 0x09 | 0x80
-      placement: pre_pon
       size_bytes: 535
       # Proven by a 4-arm control: the PSR bit ALONE is inert (chroma <= 3.1,
       # i.e. noise), while two different waveforms render completely differently
       # (chroma 23.5 / 49.6 / 15.0). A stock-vs-LUT A/B alone is NOT sufficient.
+    sleep_sequence:
+      - "02 00"
+      - "07 A5"
     modes:
       - name: full
         init: full
@@ -163,6 +186,15 @@ panels:
         - "B4 D0"
         - "B5 03"
         - "E9 01"
+        - "10"
+        - "@image"
+        - "04"                  # PON
+        # BUSY is unusable here, so the post-PON settle CANNOT be a @busy: that
+        # would spend the 35 s refresh delay. An explicit delay is the only way
+        # to have a short wait and a long wait in one sequence.
+        - "@delay 2000"
+        - "12 00"               # DRF
+        - "@busy"               # -> fixed_delay_ms (35 s)
       colour16:
         - "4D 78"
         - "00 0F 89"            # PSR with LUT_EN (0x09 | 0x80)
@@ -182,6 +214,14 @@ panels:
         - "B5 03"
         - "E9 01"
         - "82 @vcom"
+        - "20"
+        - "@lut"
+        - "10"
+        - "@image"
+        - "04"
+        - "@delay 2000"
+        - "12 00"
+        - "@busy"
 
   # ---------------------------------------------------------------------------
   - id: 0x0040
@@ -195,6 +235,7 @@ panels:
       code_map: [0, 1, 3, 2]   # u8Colors_4clr_v2
     busy:
       usable: true             # unlike the 4.2": measured releasing at ~20.2 s
+      idle_level: 1
       timeout_ms: 40000
     lut:
       supported: true
@@ -206,8 +247,12 @@ panels:
       # 0xE0/0xE6/0xA5 booster tail. Proof: each wave then plays at its own
       # intrinsic length (internal 20244 ms, colour 20909 ms, edit 1862 ms --
       # the 2.9" measures 1823 ms for that same edit wave).
-      placement: post_init
       size_bytes: 535
+      # Placement is now the position of @lut in the sequences below: it sits
+      # AFTER the 0xE0/0xE6/0xA5 booster tail, not before PON.
+    sleep_sequence:
+      - "02 00"
+      - "07 A5"
     modes:
       - name: full
         init: full
@@ -242,8 +287,13 @@ panels:
         - "E6 5A"
         - "A5 00"
         - "@busy"
-      # Identical registers but with LUT_EN set; the LUT is pushed after the
-      # whole thing (placement: post_init).
+        - "10"
+        - "@image"
+        - "12 00"
+        - "@busy"
+      # Identical registers but with LUT_EN set. @lut sits after the ENTIRE
+      # init including the booster tail -- uploading it before PON, the order
+      # the 2.9" and 4.2" use, is silently discarded on this panel.
       colour16:
         - "00 0F A9"            # PSR with LUT_EN
         - "06 0F 8B 93 A1"
@@ -262,4 +312,10 @@ panels:
         - "E0 02"
         - "E6 5A"
         - "A5 00"
+        - "@busy"
+        - "20"
+        - "@lut"                # <- post-init, after the booster tail
+        - "10"
+        - "@image"
+        - "12 00"
         - "@busy"

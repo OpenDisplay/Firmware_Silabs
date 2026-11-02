@@ -63,7 +63,14 @@ extern "C" {
  *                              0xFF index means VCOM = header[5] ^ 0x80
  *   0x00 0x03                  STREAM THE IMAGE HERE (walk pauses)
  *   0x00 0x04                  STREAM THE WAVEFORM HERE
+ *   0x00 0x05 [lo] [hi]        wait N ms (little-endian)
  *   0x00 0x00                  end of sequence
+ *
+ * The explicit delay exists because a BUSY wait is not a substitute for it.
+ * The 4.2" GDEM042F52's BUSY line is unusable, so its sequence needs a SHORT
+ * settle after power-on (2 s) and a LONG wait after refresh (35 s); a single
+ * per-panel fixed delay cannot be both. Without this step the only way to
+ * express the short one would be to hard-code it in the driver.
  *
  * A zero length is otherwise impossible (a step always has a command byte), so
  * it is free as an escape marker.
@@ -89,6 +96,7 @@ extern "C" {
 #define OD_SEQ_ESC_WAVE       0x02u
 #define OD_SEQ_ESC_IMAGE      0x03u
 #define OD_SEQ_ESC_LUT        0x04u
+#define OD_SEQ_ESC_DELAY      0x05u
 #define OD_SEQ_END            0x00u
 #define OD_SEQ_WAVE_VCOM      0xFFu
 

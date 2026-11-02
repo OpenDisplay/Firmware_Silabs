@@ -159,6 +159,14 @@ static int run_sequence(od_epd_t *e, const uint8_t *hdr, bool have_hdr,
             i += 2u;
             continue;
         }
+        if (esc == OD_SEQ_ESC_DELAY) {
+            if ((uint32_t)i + 4u > len) {
+                return OD_ERR_SEQ;
+            }
+            e->io->delay_ms((uint32_t)seq[i + 2u] | ((uint32_t)seq[i + 3u] << 8));
+            i += 4u;
+            continue;
+        }
         if (esc == OD_SEQ_ESC_IMAGE) {
             e->seq_pos = (uint16_t)(i + 2u);
             return 1;            /* caller streams the frame, then resumes */
