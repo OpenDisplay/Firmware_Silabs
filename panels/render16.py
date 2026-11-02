@@ -109,11 +109,11 @@ async def run(a) -> int:
             for i in range(16):
                 r, c = divmod(i, grid)
                 idx[top + r * ch: top + (r + 1) * ch, c * cw:(c + 1) * cw] = i
-            frames = [pack_pass(idx, pal, p, code_map) for p in range(pal.passes)]
+            # No code_map: palette codes are already panel codes.
+            frames = [pack_pass(idx, pal, p) for p in range(pal.passes)]
         else:
             img = build_image(a.width, a.height, a.pattern)
-            frames = encode_frames(img, pal, code_map=code_map,
-                                   dither=not a.no_dither)
+            frames = encode_frames(img, pal, dither=not a.no_dither)
         payload = b"".join(frames)
         print(f"encoded {len(frames)} frames x {len(frames[0])} B "
               f"= {len(payload)} B total (code_map {code_map})")

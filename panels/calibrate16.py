@@ -33,10 +33,21 @@ sys.path.insert(3, str(HERE))
 # Per-pass 2-bit codes for each palette entry: (pass0, pass1, pass2).
 # This is the ENCODING half of the calibration -- without it a measured colour
 # cannot be reproduced, because nothing else records which codes made it.
+#
+# Entry 15 is (2,1,2), not the stock "fd" (3,0,1). Measured over two units
+# (results/bwry/SESSION_2026-11-02_overnight.md): gamut hull 3681 -> 4152
+# (+12.8%) on ODBB1B76 and 3567 -> 3549 (-0.5%, within noise) on ODBF2156,
+# with mean C* up on both and one more cell above C* 10. It also replaces the
+# cell with the WORST device-to-device agreement (burgundy, dE00 19.5), so it
+# should narrow unit spread as well as widen the gamut.
+#
+# Two further swaps were measured at the same time and are NOT applied: together
+# they gave +18.0% on ODBB1B76 but -19.4% on ODBF2156, i.e. they were fitted to
+# one panel. Caveat on this one too -- n = 2 units.
 PALETTE = [(2, 0, 0), (1, 1, 1), (2, 1, 1), (3, 1, 1),
            (0, 1, 1), (1, 0, 3), (1, 2, 1), (2, 0, 2),
            (2, 1, 3), (2, 3, 1), (3, 1, 2), (0, 2, 1),
-           (0, 3, 1), (3, 2, 1), (0, 1, 0), (3, 0, 1)]
+           (0, 3, 1), (3, 2, 1), (0, 1, 0), (2, 1, 2)]
 
 VIS_TOP = 136          # first panel row the camera can see
 GRID = 4
