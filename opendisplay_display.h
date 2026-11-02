@@ -8,6 +8,13 @@
 extern "C" {
 #endif
 
+/* CMD_DRIVE_WRITE_START 0x85: full-frame write naming a config-declared mode.
+ * Multi-pass modes stream every frame in ONE session; *passes_out reports how
+ * many the device now expects. Returns 0, or -OD_ERR_DRIVE_*. */
+int opendisplay_display_drive_write_start(uint8_t mode, uint8_t refresh,
+                                          uint8_t flags, const uint8_t *payload,
+                                          uint16_t payload_len, uint8_t *passes_out);
+
 int opendisplay_display_direct_write_start(const uint8_t *payload, uint16_t payload_len);
 int opendisplay_display_direct_write_data(const uint8_t *payload, uint16_t payload_len);
 int opendisplay_display_direct_write_end(const uint8_t *payload, uint16_t payload_len, bool *refresh_ok);

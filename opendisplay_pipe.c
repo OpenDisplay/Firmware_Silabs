@@ -721,6 +721,39 @@ static void handle_direct_write_start(uint8_t connection, const uint8_t *payload
   }
 }
 
+static void handle_drive_write_start(uint8_t connection, const uint8_t *payload,
+                                     uint16_t payload_len)
+{
+  uint8_t passes = 0u;
+  int rc;
+
+  /* [mode][refresh][flags][rsv:2] then an optional compressed tail. */
+  if (payload == NULL || payload_len < 5u) {
+    uint8_t err[] = { RESP_NACK, RESP_DRIVE_WRITE_START, OD_ERR_DRIVE_BAD_ARGS, 0x00u };
+    pipe_send(connection, err, sizeof(err));
+    return;
+  }
+  if (payload[3] != 0u || payload[4] != 0u) {
+    /* Reserved bytes are rejected rather than ignored: accepting junk now means
+     * a future host cannot tell whether this device understood a field it set. */
+    uint8_t err[] = { RESP_NACK, RESP_DRIVE_WRITE_START, OD_ERR_DRIVE_BAD_ARGS, payload[0] };
+    pipe_send(connection, err, sizeof(err));
+    return;
+  }
+  rc = opendisplay_display_drive_write_start(payload[0], payload[1], payload[2],
+                                             payload + 5u,
+                                             (uint16_t)(payload_len - 5u), &passes);
+  if (rc != 0) {
+    uint8_t err[] = { RESP_NACK, RESP_DRIVE_WRITE_START, (uint8_t)(-rc), payload[0] };
+    pipe_send(connection, err, sizeof(err));
+    return;
+  }
+  {
+    uint8_t ok[] = { RESP_ACK, RESP_DRIVE_WRITE_START, payload[0], passes };
+    pipe_send(connection, ok, sizeof(ok));
+  }
+}
+
 static void handle_direct_write_data(uint8_t connection, const uint8_t *payload, uint16_t payload_len)
 {
   uint8_t ack_data[] = { RESP_ACK, RESP_DIRECT_WRITE_DATA_ACK };
@@ -1302,6 +1335,9 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
       break;
     case CMD_SPI_RAW:
       handle_spi_raw(connection, payload, payload_len);
+      break;
+    case CMD_DRIVE_WRITE_START:
+      handle_drive_write_start(connection, payload, payload_len);
       break;
     case CMD_DIRECT_WRITE_START:
       handle_direct_write_start(connection, payload, payload_len);

@@ -744,6 +744,64 @@
 #define OD_ERR_SPI_RAW_PANEL           0x04u
 #define OD_ERR_SPI_RAW_UNKNOWN_SUB     0x05u
 
+/* --------------------------------------------------------------------------
+ * @opcode: 0x0085   @name: CMD_DRIVE_WRITE_START   @dir: host->device
+ * @request:  [0x00][0x85][mode:1][refresh:1][flags:1][rsv:2]
+ *              [uncompressed_size:4 LE]   present IFF flags bit0 COMPRESSED
+ *              [first data bytes...]
+ * @response: [0x00][0x85][mode][passes] on accept -- `passes` tells the host how
+ *            many frames the device now expects, read from the CONFIG rather
+ *            than assumed, so a host need not duplicate the mode table.
+ * @errors:   [0xFF][0x85][err:1][mode:1], err = OD_ERR_DRIVE_*.
+ *
+ * @doc: A full-frame write that names the config-declared DRIVE MODE up front.
+ *
+ *       WHY NOT JUST REUSE 0x0070. The mode has to be known at START: this
+ *       driver uploads the waveform as part of the init sequence, BEFORE the
+ *       frame. 0x0072 END already carries a `refresh` byte, but it arrives
+ *       after the pixels are in the panel, which is a leftover from bb_epaper
+ *       re-sending the init at refresh time. `refresh` is carried here at START
+ *       instead, which is where it can still affect anything.
+ *
+ *       MULTI-PASS IS ONE TRANSFER, NOT THREE. A 3-pass mode drives the panel
+ *       three times with different pixel data; the host declares
+ *       passes * frame_bytes and streams the frames back to back, and the
+ *       device advances to the next pass at each frame boundary. One session
+ *       means one zlib stream across all three frames -- which matters, because
+ *       consecutive passes of the same image are highly correlated -- and it
+ *       keeps the panel rail up across the sequence without a keep-power flag.
+ *       The device never has to guess how many frames are still coming: it
+ *       knows the pass count from config and the host declared the total.
+ *
+ *       The host does NOT need to hardcode pass counts. It reads display_mode
+ *       (0x2E) out of the config, or takes `passes` from this command's ACK.
+ *
+ * @flags: bit0 COMPRESSED  payload carries uncompressed_size + zlib stream
+ *         bit1 PIPELINED   data arrives via 0x81 windowed frames, not 0x71.
+ *                          Only legal where 0x0080 is supported -- which is
+ *                          Firmware ONLY; Silabs/NRF54/NRF52811 must leave this
+ *                          clear and stream over 0x0071.
+ *         bits2-7 reserved, must be 0.
+ * @rsv:   2 bytes, must be 0. Deliberately spare: the next thing to need a byte
+ *         here is per-upload temperature, which the mode's advisory window
+ *         (0x2E temp_min_c/temp_max_c) currently leaves to the host.
+ * @state: a new START aborts any in-flight transfer. Data flows via 0x0071
+ *         (or 0x0081 when PIPELINED), and the session finalises with 0x0072.
+ * @targets:  Silabs   (Firmware/NRF54/NRF52811: pending)
+ * -------------------------------------------------------------------------- */
+#define CMD_DRIVE_WRITE_START          0x0085u
+
+/* CMD_DRIVE_WRITE_START flags (request byte 4). */
+#define DRIVE_WRITE_FLAG_COMPRESSED    0x01u
+#define DRIVE_WRITE_FLAG_PIPELINED     0x02u   /* Firmware target only */
+
+/* CMD_DRIVE_WRITE_START error codes (NACK data[0]). */
+#define OD_ERR_DRIVE_BAD_ARGS          0x01u   /* short payload / reserved != 0 */
+#define OD_ERR_DRIVE_NO_CONFIG         0x02u   /* no display, or no drive data */
+#define OD_ERR_DRIVE_BAD_MODE          0x03u   /* mode_index not in config */
+#define OD_ERR_DRIVE_BAD_SIZE          0x04u   /* declared size != passes*frame */
+#define OD_ERR_DRIVE_UNSUPPORTED       0x05u   /* e.g. PIPELINED on this target */
+
 /* ==========================================================================
  * SECTION 2 -- RESPONSE / STATUS BYTES (8-bit)
  * ==========================================================================
@@ -787,6 +845,7 @@
 
 /* Raw-SPI debug echo byte (see CMD_SPI_RAW). */
 #define RESP_SPI_RAW                   0x84u
+#define RESP_DRIVE_WRITE_START         0x85u
 
 /* @collision: RESPONSE byte 0x73 has two meanings, disambiguated by direction
  *   and context:

@@ -34,6 +34,13 @@ static uint8_t s_dw_log_pct;
 static uint8_t s_dw_trailing_ignores;
 static uint32_t s_dw_init_t0;
 static uint8_t s_color_scheme;
+/* Multi-pass drive state (CMD_DRIVE_WRITE_START 0x85). A 3-pass mode is ONE
+ * session carrying three frames back to back; the device advances at each
+ * frame boundary, so it never has to guess how many frames remain. */
+static uint8_t  s_drive_mode;
+static uint8_t  s_drive_pass;
+static uint8_t  s_drive_passes;
+static uint32_t s_frame_bytes;
 static uint32_t s_plane_size;
 static bool s_plane2_started;
 static bool s_boot_applied;
@@ -44,6 +51,9 @@ static uint8_t s_decompression_chunk[OPENDISPLAY_DECOMPRESSION_CHUNK_SIZE];
 #ifndef OD_FALLBACK_DISPLAY_PWR_PIN
 #define OD_FALLBACK_DISPLAY_PWR_PIN 0x00u
 #endif
+
+/* Defined below with the panel helpers; used by the streaming path above it. */
+static bool drive_advance_pass(void);
 
 static void dw_init_mark(const char *tag)
 {
@@ -632,6 +642,16 @@ static int dw_stream_raw_bytes(const uint8_t *payload, uint32_t payload_len)
       (void)s_epd.nextPlane();
       s_plane2_started = true;
     }
+    /* FRAME BOUNDARY = PASS BOUNDARY. A multi-pass mode streams its frames back
+     * to back in one session, so the pass advances here rather than on a
+     * separate command. s_frame_bytes is 0 for a 1-pass mode, which makes this
+     * inert on the ordinary path. */
+    if (s_frame_bytes > 0u && s_drive_pass + 1u < s_drive_passes
+        && s_written_bytes >= (uint32_t)(s_drive_pass + 1u) * s_frame_bytes) {
+      if (!drive_advance_pass()) {
+        return -1;
+      }
+    }
   }
 
   if (s_written_bytes > written_before) {
@@ -681,6 +701,45 @@ static bool zlib_stream_to_direct_write(const uint8_t *data, uint32_t len, bool 
  * setPanelType(map(panel_ic_type)) + wake + sendPanelInitFull + setAddrWindow
  * chain: there is no panel enum to map to any more, and the init is one
  * config-supplied sequence rather than four library calls. */
+static bool panel_begin_idx(const struct DisplayConfig *d, uint8_t mode, uint8_t pass)
+{
+  if (s_epd.setPanelType(0u) != BBEP_SUCCESS) {
+    printf("[OD] no drive data in config for this display\r\n");
+    return false;
+  }
+  s_epd.setRotation((int)d->rotation * 90);
+  s_epd.initIO(d->dc_pin, d->reset_pin, d->busy_pin, d->cs_pin, d->data_pin, d->clk_pin, 0);
+  if (s_epd.selectModeIndex(mode) != BBEP_SUCCESS) {
+    printf("[OD] config declares no mode %u\r\n", (unsigned)mode);
+    return false;
+  }
+  return s_epd.beginPass(pass) == BBEP_SUCCESS;
+}
+
+/* Finish the pass whose frame just completed and, if the mode has more, bring
+ * the panel up for the next one. Returns false only on a driver error. */
+static bool drive_advance_pass(void)
+{
+  const struct DisplayConfig *d = display_cfg();
+  if (s_epd.finishPass() != BBEP_SUCCESS) {
+    printf("[OD] pass %u refresh failed\r\n", (unsigned)s_drive_pass);
+    return false;
+  }
+  printf("[OD] pass %u/%u done\r\n", (unsigned)(s_drive_pass + 1u),
+         (unsigned)s_drive_passes);
+  s_drive_pass++;
+  if (s_drive_pass >= s_drive_passes) {
+    return true;                       /* sequence complete */
+  }
+  /* The rail stays up between passes: each pass re-inits the panel, but the
+   * 16-colour behaviour was characterised with power held across all three. */
+  if (d == nullptr || !panel_begin_idx(d, s_drive_mode, s_drive_pass)) {
+    return false;
+  }
+  s_plane2_started = false;
+  return true;
+}
+
 static bool panel_begin(const struct DisplayConfig *d, const char *mode, uint8_t pass)
 {
   if (s_epd.setPanelType(0u) != BBEP_SUCCESS) {
@@ -804,6 +863,98 @@ extern "C" int opendisplay_display_direct_write_start(const uint8_t *payload, ui
   return 0;
 }
 
+/* CMD_DRIVE_WRITE_START 0x85. Selects a config-declared mode, then reuses the
+ * direct-write data path verbatim -- the only difference from 0x70 is that the
+ * device knows the mode (and therefore the pass count and total size) up front. */
+extern "C" int opendisplay_display_drive_write_start(uint8_t mode, uint8_t refresh,
+                                                     uint8_t flags,
+                                                     const uint8_t *payload,
+                                                     uint16_t payload_len,
+                                                     uint8_t *passes_out)
+{
+  const struct DisplayConfig *d = display_cfg();
+  od_panel_desc_t desc;
+
+  if (d == nullptr) {
+    return -OD_ERR_DRIVE_NO_CONFIG;
+  }
+  if ((flags & DRIVE_WRITE_FLAG_PIPELINED) != 0u) {
+    /* 0x0080 is a Firmware-target feature; this target has no windowed path. */
+    return -OD_ERR_DRIVE_UNSUPPORTED;
+  }
+  if (od_epd_desc_from_config(&desc, 0u) != 0) {
+    return -OD_ERR_DRIVE_NO_CONFIG;
+  }
+  if (mode >= desc.mode_count) {
+    return -OD_ERR_DRIVE_BAD_MODE;
+  }
+
+  opendisplay_display_abort();
+  s_drive_mode = mode;
+  s_drive_pass = 0u;
+  s_drive_passes = desc.modes[mode].passes;
+  if (s_drive_passes == 0u) {
+    s_drive_passes = 1u;
+  }
+  s_color_scheme = d->color_scheme;
+  s_frame_bytes = opendisplay_color_direct_write_total_bytes(
+      d->pixel_width, d->pixel_height, s_color_scheme);
+  if (passes_out != nullptr) {
+    *passes_out = s_drive_passes;
+  }
+  /* refresh is accepted at START (where it can still matter) but the mode
+   * already names the waveform, so there is nothing left for it to select on
+   * this driver. Logged so a host sending it can see it had no effect. */
+  if (refresh != 0u) {
+    printf("[OD] drive_write refresh=%u ignored (mode names the waveform)\r\n",
+           (unsigned)refresh);
+  }
+
+  display_power_set(true);
+  if (!panel_begin_idx(d, mode, 0u)) {
+    display_power_set(false);
+    return -OD_ERR_DRIVE_NO_CONFIG;
+  }
+  s_plane_size = opendisplay_color_is_bitplanes(s_color_scheme)
+               ? opendisplay_color_bitplane_plane_bytes(d->pixel_width, d->pixel_height)
+               : 0u;
+  s_plane2_started = false;
+  s_total_bytes = s_frame_bytes * (uint32_t)s_drive_passes;
+  s_written_bytes = 0;
+  s_dw_chunk_n = 0;
+  s_dw_log_pct = 0;
+  s_dw_trailing_ignores = 0;
+  s_dw_decompressed_total = 0;
+  s_dw_compressed = (flags & DRIVE_WRITE_FLAG_COMPRESSED) != 0u;
+  s_active = true;
+
+  if (s_dw_compressed) {
+    if (payload == nullptr || payload_len < 4u) {
+      opendisplay_display_abort();
+      return -OD_ERR_DRIVE_BAD_ARGS;
+    }
+    s_dw_decompressed_total = (uint32_t)payload[0] | ((uint32_t)payload[1] << 8)
+                            | ((uint32_t)payload[2] << 16) | ((uint32_t)payload[3] << 24);
+    if (s_dw_decompressed_total != s_total_bytes) {
+      printf("[OD] drive_write size %lu != passes*frame %lu\r\n",
+             (unsigned long)s_dw_decompressed_total, (unsigned long)s_total_bytes);
+      opendisplay_display_abort();
+      return -OD_ERR_DRIVE_BAD_SIZE;
+    }
+    od_zlib_stream_reset(s_dw_decompressed_total);
+    if (payload_len > 4u
+        && !zlib_stream_to_direct_write(payload + 4, (uint16_t)(payload_len - 4u), false)) {
+      opendisplay_display_abort();
+      return -OD_ERR_DRIVE_BAD_ARGS;
+    }
+  }
+  printf("[OD] drive_write mode=%u '%s' passes=%u frame=%lu total=%lu%s\r\n",
+         (unsigned)mode, desc.modes[mode].name, (unsigned)s_drive_passes,
+         (unsigned long)s_frame_bytes, (unsigned long)s_total_bytes,
+         s_dw_compressed ? " zlib" : "");
+  return 0;
+}
+
 extern "C" int opendisplay_display_direct_write_data(const uint8_t *payload, uint16_t payload_len)
 {
   if (!s_active || payload == nullptr || payload_len == 0u) {
@@ -877,8 +1028,12 @@ extern "C" int opendisplay_display_direct_write_end(const uint8_t *payload, uint
            (unsigned)payload[0]);
   }
 
-  printf("[OD] dw refresh start\r\n");
+  printf("[OD] dw refresh start (pass %u/%u)\r\n",
+         (unsigned)(s_drive_pass + 1u), (unsigned)(s_drive_passes ? s_drive_passes : 1u));
   bool ok = (s_epd.finishPass() == BBEP_SUCCESS);
+  s_drive_passes = 0u;
+  s_drive_pass = 0u;
+  s_frame_bytes = 0u;
   printf("[OD] dw refresh done ok=%d busy=%d\r\n", (int)ok, (int)s_epd.isBusy());
   s_epd.sleep(DEEP_SLEEP);
   s_active = false;

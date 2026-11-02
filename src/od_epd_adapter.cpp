@@ -309,6 +309,15 @@ int OdEpdAdapter::selectMode(const char *name)
                                                        : BBEP_ERROR_BAD_PARAMETER;
 }
 
+int OdEpdAdapter::selectModeIndex(uint8_t index)
+{
+    if (!_ready || index >= _desc.mode_count) {
+        return BBEP_ERROR_BAD_PARAMETER;
+    }
+    return od_epd_select_mode(&_epd, index) == 0 ? BBEP_SUCCESS
+                                                 : BBEP_ERROR_BAD_PARAMETER;
+}
+
 uint8_t OdEpdAdapter::passCount(void) const
 {
     return _ready ? _desc.modes[_epd.mode].passes : 0u;
