@@ -46,13 +46,23 @@
 // <i> EFR32BG22: FLASH_PAGE_SIZE 8192; 4 pages (32768) supports max-object 4096
 // <i> with ~8 KB of margin. 3 pages (24576) only supported max-object 2112.
 // <i>
-// <i> GROWING THIS INVALIDATES EVERYTHING IN NVM3, INCLUDING THE ENCRYPTION KEY.
-// <i> It does NOT need a chip erase, which an earlier version of this comment
-// <i> claimed. Measured: a device whose NVM3 cannot be opened still boots,
-// <i> advertises and accepts an UNENCRYPTED config write, because with no stored
-// <i> security packet there is nothing to authenticate against. So the recovery
-// <i> is: read the config off the device, OTA, then write it back over BLE. Read
-// <i> it FIRST -- afterwards the key is gone and you cannot re-derive it.
+// <i> GROWING THIS IS NON-DESTRUCTIVE. Measured on ODBB1B76 2026-11-02: the
+// <i> original encryption key and drive data both survived 24576 -> 32768 with
+// <i> no restore step. The region is pinned to __main_flash_end__ and grows
+// <i> DOWNWARD (0x50000 -> 0x4E000, end fixed at 0x56000), so existing pages
+// <i> stay in range with valid headers; NVM3 opens, keeps every object, and
+// <i> formats only the newly added page. Two further units (ODBF2156,
+// <i> ODCF0ED5) were migrated on 2026-11-02 and authenticated afterwards with
+// <i> their existing keys.
+// <i>
+// <i> SHRINKING IT, or any change that moves the region's END, is a different
+// <i> matter and is not covered by that measurement.
+// <i>
+// <i> If NVM3 ever does fail to open, the device still boots, advertises and
+// <i> accepts an UNENCRYPTED config write, because with no stored security
+// <i> packet there is nothing to authenticate against. The recovery is then:
+// <i> read the config off the device, OTA, write it back over BLE. Read it
+// <i> FIRST -- afterwards the key is gone and you cannot re-derive it.
 // <i>
 // <i> Flash cost: NVM3 sits at the top of the app region (0x56000) and grows
 // <i> downward. The linker ASSERT below the .nvm section turns an overflow into a

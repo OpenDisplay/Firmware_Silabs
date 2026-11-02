@@ -762,13 +762,27 @@ extern "C" void opendisplay_display_boot_apply(void)
   if (s_boot_applied || d == nullptr) {
     return;
   }
-  s_boot_applied = true;
 
   display_power_set(true);
   /* MODE 0 BY CONVENTION. The boot screen always uses the first declared mode,
    * so the firmware needs no mode names and no notion of which one is "full" --
    * whatever the config lists first is the plain refresh. */
   if (!panel_begin_idx(d, 0u, 0u)) {
+    /* DO NOT LATCH A FAILED ATTEMPT.
+     *
+     * This fails whenever the config carries no drive packets, which is the
+     * normal state of a freshly flashed or factory device -- mode 0 does not
+     * exist yet. Latching before the attempt meant the boot screen was lost
+     * for the whole boot: the config-reload path calls this again precisely so
+     * a host that writes drive packets gets the QR without a power cycle, and
+     * that retry was dead on arrival. Observed on ODCF0ED5 and ODBF2156, both
+     * OTA'd before their drive packets existed.
+     *
+     * Printing matters as much as retrying: an undriven panel is
+     * indistinguishable from one that was driven white, which is the same trap
+     * the "did not fit" message below was added for. */
+    printf("[OD] boot screen: mode 0 unavailable (no drive packets?); "
+           "will retry after the next config write\r\n");
     display_power_set(false);
     return;
   }
@@ -783,6 +797,10 @@ extern "C" void opendisplay_display_boot_apply(void)
     return;
   }
   (void)s_epd.finishPass();
+  /* Latch only now that the panel has actually been driven. Doing it here also
+   * keeps the guarantee the early latch was there for: once the boot screen is
+   * up, a later config write must not redraw it over a user's image. */
+  s_boot_applied = true;
   s_epd.sleep(DEEP_SLEEP);
   display_power_set(false);
 }
