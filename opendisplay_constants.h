@@ -29,6 +29,13 @@
 #define CONFIG_PKT_DISPLAY_MODE   0x2E
 #define CONFIG_PKT_DISPLAY_LUT    0x2F
 #define CONFIG_PKT_DISPLAY_CALIB  0x30
+/* 0x31 carries the per-panel drive properties that 0x20 never had: whether the
+ * BUSY line can be trusted, which level means idle, the logical-to-panel colour
+ * code map, and the sleep sequence. Without it a driver still needs a built-in
+ * per-panel table, which is the thing this change exists to delete. 0x20 has 13
+ * reserved bytes, but they will not take a sleep sequence and an older host
+ * writes them as zero -- a zeroed code_map is wrong, not merely conservative. */
+#define CONFIG_PKT_DISPLAY_PANEL  0x31
 
 /* Wire sizes of config packets Silabs does not consume itself (touch/buzzer are
  * handled by the main MCU, data_extended is host-only). They must still be
@@ -40,6 +47,7 @@
 #define CONFIG_PKT_DISPLAY_MODE_SIZE   157
 #define CONFIG_PKT_DISPLAY_LUT_SIZE    541
 #define CONFIG_PKT_DISPLAY_CALIB_SIZE  100
+#define CONFIG_PKT_DISPLAY_PANEL_SIZE  36
 
 #define GPIO_PIN_UNUSED 0xFF
 

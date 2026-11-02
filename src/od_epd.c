@@ -14,8 +14,22 @@
 #define OD_ERR_SEQ      -3
 #define OD_ERR_LUT      -4
 #define OD_ERR_BUSY     -5
+#define OD_ERR_STATE    -6
+
+/* Streaming chunk for the waveform. 64 B of stack against a 535-byte upload:
+ * the alternative is a resident 535-byte buffer, which is 1.7% of this part's
+ * RAM held permanently for bytes that are only ever clocked straight out. */
+#define LUT_CHUNK 64u
 
 /* ------------------------------------------------------------------ helpers */
+
+bool od_epd_is_busy(od_epd_t *e)
+{
+    if (!e->desc->busy_usable) {
+        return false;
+    }
+    return e->io->busy_level() != (e->desc->busy_idle_level != 0u);
+}
 
 bool od_epd_wait_idle(od_epd_t *e, uint32_t timeout_ms)
 {
@@ -32,7 +46,7 @@ bool od_epd_wait_idle(od_epd_t *e, uint32_t timeout_ms)
         return true;
     }
     uint32_t waited = 0;
-    while (e->io->busy()) {
+    while (od_epd_is_busy(e)) {
         if (waited >= timeout_ms) {
             return false;
         }
@@ -42,41 +56,75 @@ bool od_epd_wait_idle(od_epd_t *e, uint32_t timeout_ms)
     return true;
 }
 
-/* Substitute a byte that the mode takes from the LUT's analog header.
+/* Substitute a byte that the sequence takes from the waveform's analog header.
  * PWRR/PLL/VCOM are properties of the WAVEFORM, not of the init sequence, so a
- * mode that uploads a custom LUT must drive the analog rails that waveform was
- * authored for. Sending a custom LUT with the stock rails plays the right
- * waveform at the wrong voltages -- which does not fail, it renders a
+ * mode that uploads a custom waveform must drive the analog rails that waveform
+ * was authored for. Sending a custom waveform with the stock rails plays the
+ * right waveform at the wrong voltages -- which does not fail, it renders a
  * plausible-but-wrong image. */
-static uint8_t wave_byte(const uint8_t *lut, uint16_t lut_len, uint8_t idx)
+static uint8_t wave_byte(const uint8_t *hdr, bool have_hdr, uint8_t idx)
 {
-    if (lut == NULL || lut_len < 7u) {
+    if (!have_hdr) {
         return 0u;
     }
     if (idx == OD_SEQ_WAVE_VCOM) {
-        return (uint8_t)(lut[5] ^ 0x80u);
+        return (uint8_t)(hdr[5] ^ 0x80u);
     }
-    return (idx < 7u) ? lut[idx] : 0u;
+    return (idx < 7u) ? hdr[idx] : 0u;
+}
+
+/* Stream the active pass's waveform straight to the panel.
+ *
+ * vsn1 patching happens here rather than at authoring time because the same
+ * waveform slot is shared by more than one pass with DIFFERENT patches: the
+ * 16-colour mode's passes 1 and 2 both use the edit waveform but patch byte 3
+ * to 0x14 and 0x41 respectively. Storing them pre-patched would cost a second
+ * 535-byte copy in the config to hold one differing byte. */
+static int stream_lut(od_epd_t *e, uint8_t slot, uint8_t vsn1, uint16_t len)
+{
+    uint8_t buf[LUT_CHUNK];
+    uint16_t off = 0;
+
+    while (off < len) {
+        uint16_t want = (uint16_t)((uint16_t)(len - off) < (uint16_t)LUT_CHUNK
+                                 ? (uint16_t)(len - off) : (uint16_t)LUT_CHUNK);
+        uint16_t got = e->io->lut_read(slot, off, buf, want);
+        if (got != want) {
+            return OD_ERR_LUT;
+        }
+        if (vsn1 != 0u && off <= 3u && (uint16_t)(off + got) > 3u) {
+            buf[3u - off] = vsn1;
+        }
+        e->io->data(buf, (size_t)got);
+        off += got;
+    }
+    return OD_OK;
 }
 
 /* Forward-only walk over a length-prefixed sequence.
  *
- * Deliberately NOT a bytecode VM. Init sequences arrive in the config, which is
+ * Deliberately NOT a bytecode VM. Sequences arrive in the config, which is
  * parsed pre-auth, so this is untrusted input. There are no jumps, no loops and
  * no addressing: the walk only moves forward, every step is bounded by the
- * blob length, and the step count is capped. The worst a malformed sequence can
- * do is clock out nonsense and time out -- which the raw-SPI debug command can
- * already do deliberately.
+ * sequence length, and the step count is capped. The worst a malformed sequence
+ * can do is clock out nonsense and time out -- which the raw-SPI debug command
+ * can already do deliberately.
+ *
+ * Returns OD_OK at end of sequence, 1 when it paused on the image marker, or a
+ * negative error. `e->seq_pos` is where to resume.
  */
-static int run_sequence(od_epd_t *e, const uint8_t *seq, uint16_t len,
-                        const uint8_t *lut, uint16_t lut_len)
+static int run_sequence(od_epd_t *e, const uint8_t *hdr, bool have_hdr,
+                        uint8_t slot, uint8_t vsn1, uint16_t lut_len)
 {
-    uint16_t i = 0;
+    const uint8_t *seq = e->seq;
+    uint16_t len = e->seq_len;
+    uint16_t i = e->seq_pos;
     uint16_t steps = 0;
     uint8_t  buf[32];
 
     while (i < len) {
         if (++steps > OD_EPD_MAX_SEQ_STEPS) {
+            e->seq_pos = i;
             return OD_ERR_SEQ;
         }
         uint8_t n = seq[i];
@@ -99,12 +147,32 @@ static int run_sequence(od_epd_t *e, const uint8_t *seq, uint16_t len,
             return OD_ERR_SEQ;
         }
         uint8_t esc = seq[i + 1u];
+
         if (esc == OD_SEQ_END) {
+            e->seq_pos = len;
             return OD_OK;
         }
         if (esc == OD_SEQ_ESC_BUSY) {
             if (!od_epd_wait_idle(e, e->desc->busy_timeout_ms)) {
                 return OD_ERR_BUSY;
+            }
+            i += 2u;
+            continue;
+        }
+        if (esc == OD_SEQ_ESC_IMAGE) {
+            e->seq_pos = (uint16_t)(i + 2u);
+            return 1;            /* caller streams the frame, then resumes */
+        }
+        if (esc == OD_SEQ_ESC_LUT) {
+            /* Loud, not silent: a mode whose sequence uploads a waveform but
+             * whose pass resolved no slot would otherwise refresh with whatever
+             * the panel had in its waveform register. */
+            if (!have_hdr) {
+                return OD_ERR_LUT;
+            }
+            int rc = stream_lut(e, slot, vsn1, lut_len);
+            if (rc != OD_OK) {
+                return rc;
             }
             i += 2u;
             continue;
@@ -121,7 +189,7 @@ static int run_sequence(od_epd_t *e, const uint8_t *seq, uint16_t len,
             const uint8_t *p = &seq[i + 3u];
             for (uint8_t k = 0; k < cnt; k++) {
                 buf[k] = (p[k * 2u] == 0xFFu)
-                       ? wave_byte(lut, lut_len, p[k * 2u + 1u])
+                       ? wave_byte(hdr, have_hdr, p[k * 2u + 1u])
                        : p[k * 2u + 1u];
             }
             e->io->cmd(buf[0]);
@@ -133,23 +201,35 @@ static int run_sequence(od_epd_t *e, const uint8_t *seq, uint16_t len,
         }
         return OD_ERR_SEQ;
     }
+    e->seq_pos = len;
     return OD_OK;
 }
 
 /* -------------------------------------------------------------------- API */
 
-int od_epd_init(od_epd_t *e, const od_panel_desc_t *d, const od_epd_io_t *io,
-                const uint8_t *seq_blob, uint16_t seq_blob_len)
+int od_epd_init(od_epd_t *e, const od_panel_desc_t *d, const od_epd_io_t *io)
 {
-    if (!e || !d || !io || !io->cmd || !io->data || !io->reset || !io->delay_ms) {
+    if (!e || !d || !io || !io->cmd || !io->data || !io->reset || !io->delay_ms ||
+        !io->busy_level || !io->seq_read) {
         return OD_ERR_ARG;
     }
     memset(e, 0, sizeof(*e));
     e->desc = d;
     e->io = io;
-    e->seq_blob = seq_blob;
-    e->seq_blob_len = seq_blob_len;
     return OD_OK;
+}
+
+int od_epd_find_mode(const od_panel_desc_t *d, const char *name)
+{
+    if (!d || !name) {
+        return OD_ERR_ARG;
+    }
+    for (uint8_t i = 0; i < d->mode_count; i++) {
+        if (strncmp(d->modes[i].name, name, sizeof(d->modes[i].name)) == 0) {
+            return (int)i;
+        }
+    }
+    return OD_ERR_MODE;
 }
 
 int od_epd_select_mode(od_epd_t *e, uint8_t mode)
@@ -159,26 +239,51 @@ int od_epd_select_mode(od_epd_t *e, uint8_t mode)
     }
     e->mode = mode;
     e->pass = 0;
+    e->paused = false;
     return OD_OK;
 }
 
 int od_epd_begin_pass(od_epd_t *e, uint8_t pass)
 {
     const od_epd_mode_t *m = &e->desc->modes[e->mode];
+    uint8_t  hdr[7];
+    bool     have_hdr = false;
+    uint16_t lut_len = 0;
+    uint8_t  slot;
+    uint8_t  vsn1;
+
     if (pass >= m->passes) {
         return OD_ERR_MODE;
     }
+    if (m->seq_len == 0u || m->seq_len > OD_EPD_SEQ_MAX) {
+        return OD_ERR_SEQ;
+    }
     e->pass = pass;
+    e->paused = false;
 
-    /* Resolve this pass's LUT, if any. */
-    const uint8_t *lut = NULL;
-    uint16_t lut_len = 0;
-    uint8_t slot = m->lut_slot[pass];
-    if (slot != 0xFFu && e->desc->lut_supported && e->io->lut) {
-        lut = e->io->lut(slot, &lut_len);
-        if (lut && lut_len < 7u) {
-            return OD_ERR_LUT;   /* too short to even carry an analog header */
+    /* Pull this pass's recipe out of NVM3. One read, 128 B max. */
+    e->seq_len = e->io->seq_read(e->mode, 0u, e->seq, m->seq_len);
+    if (e->seq_len != m->seq_len) {
+        return OD_ERR_SEQ;
+    }
+    e->seq_pos = 0u;
+
+    /* Resolve this pass's waveform. Only the 7-byte analog header is read into
+     * RAM -- the 528-byte body is streamed later, at the marker. */
+    slot = m->lut_slot[pass];
+    vsn1 = m->vsn1[pass];
+    if (slot != 0xFFu && e->io->lut_info && e->io->lut_read &&
+        e->io->lut_info(slot, &lut_len)) {
+        if (lut_len < 7u) {
+            return OD_ERR_LUT;   /* too short to carry an analog header */
         }
+        if (e->io->lut_read(slot, 0u, hdr, 7u) != 7u) {
+            return OD_ERR_LUT;
+        }
+        if (vsn1 != 0u) {
+            hdr[3] = vsn1;
+        }
+        have_hdr = true;
     }
 
     e->io->reset(10);
@@ -186,44 +291,17 @@ int od_epd_begin_pass(od_epd_t *e, uint8_t pass)
         return OD_ERR_BUSY;
     }
 
-    if ((uint32_t)m->init_off + m->init_len > e->seq_blob_len) {
-        return OD_ERR_SEQ;
+    int rc = run_sequence(e, hdr, have_hdr, slot, vsn1, lut_len);
+    if (rc < 0) {
+        return rc;
     }
-    const uint8_t *seq = &e->seq_blob[m->init_off];
-
-    /* LUT PLACEMENT IS PER-PANEL AND IS NOT INFERABLE.
-     *
-     * On the 2.9" and 4.2" the waveform must be uploaded BEFORE power-on. On the
-     * 7.5" GDEM075F52 that upload is SILENTLY DISCARDED -- two different
-     * waveforms then render identically to within 0.2/255, which looks like
-     * conclusive proof that the panel ignores custom LUTs, and is not. It must
-     * go after the ENTIRE init including the booster tail. Proof that it works:
-     * each waveform then plays at its own intrinsic length (internal 20244 ms,
-     * colour 20909 ms, edit 1862 ms).
-     *
-     * Because pre-PON is silently wrong rather than loudly wrong on one panel,
-     * placement has to be declared data, not driver behaviour.
-     */
-    if (lut && e->desc->lut_placement == OD_LUT_PRE_PON) {
-        /* The init sequence itself carries the LUT-enable bit (the host set it
-         * when generating the sequence), so we only push the waveform here. */
-        int rc = run_sequence(e, seq, m->init_len, lut, lut_len);
-        if (rc != OD_OK) {
-            return rc;
-        }
-        e->io->cmd(e->desc->lut_write_cmd);
-        e->io->data(lut, lut_len);
-    } else {
-        int rc = run_sequence(e, seq, m->init_len, lut, lut_len);
-        if (rc != OD_OK) {
-            return rc;
-        }
-        if (lut) {   /* OD_LUT_POST_INIT */
-            e->io->cmd(e->desc->lut_write_cmd);
-            e->io->data(lut, lut_len);
-        }
+    if (rc == 1) {
+        e->paused = true;        /* stopped on the image marker, as expected */
+        return OD_OK;
     }
-    return OD_OK;
+    /* A sequence with no image marker is a programming error in the config,
+     * not something to paper over: the frame would have nowhere to go. */
+    return OD_ERR_SEQ;
 }
 
 int od_epd_write_image_chunk(od_epd_t *e, const uint8_t *buf, size_t n)
@@ -231,26 +309,65 @@ int od_epd_write_image_chunk(od_epd_t *e, const uint8_t *buf, size_t n)
     if (!e || (!buf && n)) {
         return OD_ERR_ARG;
     }
+    if (!e->paused) {
+        return OD_ERR_STATE;
+    }
     if (n) {
         e->io->data(buf, n);   /* streamed; never buffered */
     }
     return OD_OK;
 }
 
-int od_epd_refresh(od_epd_t *e)
+int od_epd_next_plane(od_epd_t *e)
 {
-    /* The refresh command and its argument are panel data like everything else;
-     * they live at the tail of the mode's sequence blob as a normal step, so a
-     * panel needing a different refresh opcode needs no code change. Here we
-     * only wait for completion. */
-    if (!od_epd_wait_idle(e, e->desc->busy_timeout_ms)) {
-        return OD_ERR_BUSY;
+    /* Panels that take two 1bpp planes (3-colour black/white/red) have a second
+     * image command between them -- bb_epaper spelled this startWrite(PLANE_1).
+     * Here it is a second image marker in the same sequence, so the register
+     * that opens plane 1 is config data like every other byte.
+     *
+     * No panel in this branch uses it: the three BWRY panels are single-plane
+     * 2bpp. It exists so a 3-colour panel is EXPRESSIBLE in a sequence rather
+     * than blocked on a driver change. */
+    if (!e || !e->paused) {
+        return OD_ERR_STATE;
     }
+    e->paused = false;
+    int rc = run_sequence(e, NULL, false, 0xFFu, 0u, 0u);
+    if (rc < 0) {
+        return rc;
+    }
+    if (rc != 1) {
+        return OD_ERR_SEQ;      /* caller wanted another plane; sequence has none */
+    }
+    e->paused = true;
     return OD_OK;
+}
+
+int od_epd_finish_pass(od_epd_t *e)
+{
+    if (!e || !e->paused) {
+        return OD_ERR_STATE;
+    }
+    e->paused = false;
+    /* The tail -- power-on, refresh opcode, BUSY wait -- is the remainder of
+     * the same sequence. A panel needing a different refresh command or an
+     * extra register poke after the frame needs no code change here. */
+    int rc = run_sequence(e, NULL, false, 0xFFu, 0u, 0u);
+    return (rc < 0) ? rc : OD_OK;
 }
 
 int od_epd_sleep(od_epd_t *e)
 {
-    (void)e;
-    return OD_OK;   /* sleep sequence is config-provided, run by the caller */
+    if (!e || e->desc->sleep_seq_len == 0u) {
+        return OD_OK;            /* panel declares no sleep sequence */
+    }
+    if (e->desc->sleep_seq_len > OD_EPD_SLEEP_SEQ_MAX) {
+        return OD_ERR_SEQ;
+    }
+    memcpy(e->seq, e->desc->sleep_seq, e->desc->sleep_seq_len);
+    e->seq_len = e->desc->sleep_seq_len;
+    e->seq_pos = 0u;
+    e->paused = false;
+    int rc = run_sequence(e, NULL, false, 0xFFu, 0u, 0u);
+    return (rc < 0) ? rc : OD_OK;
 }

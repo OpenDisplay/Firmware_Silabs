@@ -722,11 +722,11 @@ OD_STATIC_ASSERT(sizeof(struct DisplayConfig) == 46, "DisplayConfig wire size");
 
 
 /* ---------------------------------------------------------------------------
- * 0x2E display_mode / 0x2F display_lut  (minor 1.6)
+ * 0x2E display_mode / 0x2F display_lut / 0x31 display_panel  (minor 1.6)
  *
  * Panel DRIVE data, which used to live in the vendored bb_epaper library. With
- * these the firmware carries no panel table at all: every command byte, delay,
- * LUT placement and BUSY policy arrives in the config.
+ * these the firmware carries no panel table at all: every command byte, every
+ * waveform, the BUSY policy and the colour code map arrive in the config.
  *
  * Appended at the end of the packet-id space on purpose -- shipped firmware
  * abandons the rest of the blob at the first unknown id, so new types must sit
@@ -737,30 +737,34 @@ OD_STATIC_ASSERT(sizeof(struct DisplayConfig) == 46, "DisplayConfig wire size");
 #define OD_MAX_MODES_PER_DISPLAY 4u
 #define OD_MAX_LUT_SLOTS 2u   /* 16-colour needs 2: colour + edit (shared by
                                * passes 1-2), so 3 passes cost 2 slots. */
+#define OD_SLEEP_SEQ_FIELD_BYTES 16u
 
-/* ON THE WIRE the packet carries the sequence inline (157 B). IN RAM we keep
- * only a reference into the stored config blob, which is already resident in
- * s_cfg_rec.data[]. Copying it again cost 128 B per mode for a second copy of
- * bytes we already had -- measured: the embedded version left just 480 B of
- * RAM free on this 32 KB part. */
+/* THESE ARE WIRE LAYOUTS, NOT RAM LAYOUTS.
+ *
+ * Nothing holds one of these resident. The stored config lives in NVM3 and
+ * nowhere else (od_cfg_index.h), so fields are read on demand by offset and the
+ * 535-byte waveform is streamed to SPI in chunks. An earlier revision of this
+ * header carried `seq_blob_off` / `data_blob_off` fields pointing into a
+ * resident copy of the blob; that copy is gone, and a stored byte offset into a
+ * buffer that no longer exists is worse than no field at all. */
 struct DisplayModeConfig {
     uint8_t  instance_number;
     uint8_t  mode_index;
     char     mode_name[12];
     uint8_t  passes;
-    uint8_t  lut_slot[4];   /* per pass; 0xFF = no custom LUT */
-    uint8_t  vsn1[4];       /* per pass wave-header byte 3 patch; 0 = none */
-    uint8_t  mode_flags;    /* bit0 = analog params come from the LUT header */
+    uint8_t  lut_slot[4];   /* per pass; 0xFF = no custom waveform */
+    uint8_t  vsn1[4];       /* per pass waveform byte 3 patch; 0 = none */
+    uint8_t  reserved_flags; /* was analog_from_wave: now implied by whether the
+                              * sequence contains any @w token. Kept as a byte so
+                              * the packet size does not move. */
     int8_t   temp_min_c;    /* advisory; the HOST enforces the gate */
     int8_t   temp_max_c;
     uint8_t  temp_policy;
     uint16_t seq_len;
-    uint16_t seq_blob_off;  /* offset of init_seq within the config blob */
+    uint8_t  seq[OD_SEQ_FIELD_BYTES];
 } __attribute__((packed));
+OD_STATIC_ASSERT(sizeof(struct DisplayModeConfig) == 157, "DisplayModeConfig wire size");
 
-/* Same reasoning: the 535-byte waveform stays in the resident config blob and
- * this is only a pointer to it. The driver streams it straight from there to
- * SPI, so it is never copied at all. */
 struct DisplayLutConfig {
     uint8_t  instance_number;
     uint8_t  lut_slot;
@@ -768,10 +772,38 @@ struct DisplayLutConfig {
     uint16_t crc16;         /* slot failing CRC is treated as ABSENT, so an
                              * interrupted write falls back to no-custom-LUT
                              * instead of driving a half-written waveform */
-    uint16_t data_blob_off; /* offset of data[] within the config blob */
+    uint8_t  data[OD_LUT_FIELD_BYTES];
 } __attribute__((packed));
+OD_STATIC_ASSERT(sizeof(struct DisplayLutConfig) == 541, "DisplayLutConfig wire size");
 
-#define OD_MODE_FLAG_ANALOG_FROM_WAVE 0x01u
+/** @struct DisplayPanelConfig  @packet 0x31  @repeatable max=4
+ *  @doc "Per-panel drive properties: BUSY trust and sense, logical-to-panel
+ *  colour code map, sleep sequence. 36 bytes."
+ *
+ * WHY THESE ARE NOT IN 0x20. They were never on the wire at all -- 0x20 carries
+ * busy_pin but says nothing about whether that pin can be believed. The 4.2"
+ * GDEM042F52 reads busy immediately after power-up with nothing sent and never
+ * releases after a refresh, so polling it stalls forever; bb_epaper encoded
+ * that as an undocumented local patch to its vendored tree. Until this packet
+ * existed, any driver still needed a compiled-in per-panel table.
+ */
+struct DisplayPanelConfig {
+    uint8_t  instance_number;    /**< @doc "display instance this describes." */
+    uint8_t  panel_flags;        /**< @bits DisplayPanelFlags */
+    uint8_t  busy_idle_level;    /**< @doc "pin level meaning not-busy; 0 or 1." */
+    uint16_t busy_timeout_ms;    /**< @endian le @doc "poll ceiling when BUSY is usable." */
+    uint16_t busy_fixed_delay_ms;/**< @endian le @doc "blind wait when it is not." */
+    uint8_t  code_map[4];        /**< @doc "logical colour index -> panel 2-bit code." */
+    uint8_t  mode_count;         /**< @doc "how many 0x2E packets belong to this display." */
+    uint8_t  sleep_seq_len;      /**< @doc "bytes of sleep_seq in use; 0 = no sleep sequence." */
+    uint8_t  sleep_seq[OD_SLEEP_SEQ_FIELD_BYTES]; /**< @doc "encoded sequence, same format as DisplayModeConfig.seq." */
+    uint8_t  reserved[7];        /**< @reserved @doc "future use; must be 0." */
+} __attribute__((packed));
+OD_STATIC_ASSERT(sizeof(struct DisplayPanelConfig) == 36, "DisplayPanelConfig wire size");
+
+/* DisplayPanelConfig.panel_flags @bits DisplayPanelFlags */
+#define OD_PANEL_FLAG_BUSY_USABLE  (1u << 0) /* @doc "the BUSY line can be polled" */
+#define OD_PANEL_FLAG_LUT_SUPPORTED (1u << 1) /* @doc "panel honours a custom waveform" */
 
 /* -----------------------------------------------------------------------
  * 0x21  led

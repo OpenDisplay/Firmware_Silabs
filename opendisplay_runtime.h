@@ -29,14 +29,17 @@ struct GlobalConfig {
   struct PowerOption power_option;
   struct DisplayConfig displays[4];
   uint8_t display_count;
-  /* Panel DRIVE data (minor 1.6). With these present the firmware needs no
-   * panel table: od_epd takes every command byte, delay, LUT placement and
-   * BUSY policy from here. ~1.6 KB of RAM on a 32 KB part, which is the price
-   * of not having panel behaviour welded into a vendored library. */
-  struct DisplayModeConfig display_modes[OD_MAX_MODES_PER_DISPLAY];
-  uint8_t display_mode_count;
-  struct DisplayLutConfig display_luts[OD_MAX_LUT_SLOTS];
-  uint8_t display_lut_count;
+  /* Panel DRIVE data (0x2E/0x2F/0x31) is deliberately ABSENT from this struct.
+   *
+   * It used to live here as display_modes[4] + display_luts[2] -- 1710 bytes of
+   * a 32 KB part, holding a second copy of bytes that are already in NVM3. The
+   * driver consumes them exactly twice per refresh (once to walk the sequence,
+   * once to clock the waveform out of SPI), so residency bought nothing.
+   *
+   * od_epd reads them on demand through od_cfg_index: a 192-byte map of where
+   * each packet body sits, bodies fetched with nvm3_readPartialData. The 535-
+   * byte waveform is streamed to the panel 64 bytes at a time and never lands
+   * in RAM whole at all. */
   struct LedConfig leds[4];
   uint8_t led_count;
   struct SensorData sensors[4];

@@ -207,54 +207,29 @@ bool parseConfigBytes(uint8_t* configData, uint32_t configLen, struct GlobalConf
                 }
                 break;
                 
-            case CONFIG_PKT_DISPLAY_MODE: // 0x2E display_mode
-                if (globalConfig->display_mode_count < OD_MAX_MODES_PER_DISPLAY &&
-                    offset + CONFIG_PKT_DISPLAY_MODE_SIZE <= configLen - 2) {
-                    struct DisplayModeConfig *m =
-                        &globalConfig->display_modes[globalConfig->display_mode_count];
-                    const uint8_t *b = &configData[offset];
-                    m->instance_number = b[0];
-                    m->mode_index      = b[1];
-                    memcpy(m->mode_name, &b[2], 12);
-                    m->passes          = b[14];
-                    memcpy(m->lut_slot, &b[15], 4);
-                    memcpy(m->vsn1,     &b[19], 4);
-                    m->mode_flags      = b[23];
-                    m->temp_min_c      = (int8_t)b[24];
-                    m->temp_max_c      = (int8_t)b[25];
-                    m->temp_policy     = b[26];
-                    m->seq_len         = (uint16_t)(b[27] | (b[28] << 8));
-                    /* Reference the sequence where it already sits. */
-                    m->seq_blob_off    = (uint16_t)(offset + 29u);
-                    if (m->seq_len > OD_SEQ_FIELD_BYTES) {
-                        m->seq_len = 0;   /* refuse rather than over-read */
-                    }
-                    globalConfig->display_mode_count++;
-                }
+            /* Panel DRIVE data: SKIPPED here on purpose.
+             *
+             * 0x2E/0x2F/0x31 are read on demand straight out of NVM3 by
+             * od_cfg_index + od_epd_adapter, so parsing them into GlobalConfig
+             * would create exactly the second resident copy that was just
+             * removed (1710 bytes for modes + waveforms). The only thing this
+             * walk owes them is an accurate size so later packets still parse.
+             *
+             * 0x30 display_calibration is host-owned and inert on the device. */
+            case CONFIG_PKT_DISPLAY_MODE: // 0x2E
                 offset += CONFIG_PKT_DISPLAY_MODE_SIZE;
                 break;
 
-            case CONFIG_PKT_DISPLAY_LUT: // 0x2F display_lut
-                if (globalConfig->display_lut_count < OD_MAX_LUT_SLOTS &&
-                    offset + CONFIG_PKT_DISPLAY_LUT_SIZE <= configLen - 2) {
-                    struct DisplayLutConfig *l =
-                        &globalConfig->display_luts[globalConfig->display_lut_count];
-                    const uint8_t *b = &configData[offset];
-                    l->instance_number = b[0];
-                    l->lut_slot        = b[1];
-                    l->lut_len         = (uint16_t)(b[2] | (b[3] << 8));
-                    l->crc16           = (uint16_t)(b[4] | (b[5] << 8));
-                    l->data_blob_off   = (uint16_t)(offset + 6u);
-                    if (l->lut_len > OD_LUT_FIELD_BYTES) {
-                        l->lut_len = 0;
-                    }
-                    globalConfig->display_lut_count++;
-                }
+            case CONFIG_PKT_DISPLAY_LUT: // 0x2F
                 offset += CONFIG_PKT_DISPLAY_LUT_SIZE;
                 break;
 
-            case CONFIG_PKT_DISPLAY_CALIB: // 0x30 - stored by the HOST, inert here
+            case CONFIG_PKT_DISPLAY_CALIB: // 0x30
                 offset += CONFIG_PKT_DISPLAY_CALIB_SIZE;
+                break;
+
+            case CONFIG_PKT_DISPLAY_PANEL: // 0x31
+                offset += CONFIG_PKT_DISPLAY_PANEL_SIZE;
                 break;
 
             case CONFIG_PKT_LED: // led - parse but don't log

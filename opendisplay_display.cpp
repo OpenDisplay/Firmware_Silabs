@@ -3,10 +3,9 @@
 #include "opendisplay_ble.h"
 #include "opendisplay_config_parser.h"
 #include "opendisplay_constants.h"
-#include "opendisplay_epd_map.h"
 #include "opendisplay_protocol.h"   /* OD_ERR_SPI_RAW_* for the raw SPI session */
 #include "opendisplay_runtime.h"
-#include "bb_epaper.h"
+#include "od_epd_adapter.h"
 #include "em_cmu.h"
 #include "em_gpio.h"
 #include "em_system.h"
@@ -21,7 +20,7 @@ extern "C" {
 
 #define OPENDISPLAY_DECOMPRESSION_CHUNK_SIZE 256u
 
-static BBEPAPER s_epd;
+static OdEpdAdapter s_epd;
 static bool s_active;
 /* Raw SPI debug session (CMD_SPI_RAW). Declared up here with the other module
  * state so opendisplay_display_abort() can clear it: abort cuts the power
@@ -350,7 +349,7 @@ static uint16_t base64url_encode(const uint8_t *data, uint16_t len, char *out, u
   return out_len;
 }
 
-static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
+static bool render_boot_screen(OdEpdAdapter &epd, const struct GlobalConfig *cfg)
 {
   static const char *LANDING_URL_PREFIX = "https://opendisplay.org/l/?";
   const struct SecurityConfig *sec = od_get_parsed_security();
@@ -467,8 +466,12 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
 
   {
     static uint8_t s_boot_row[256];
-    bool is4clr = (epd._bbep.iFlags & BBEP_4COLOR) != 0;
-    bool is3clr = (epd._bbep.iFlags & BBEP_3COLOR) != 0;
+    /* Was: read bb_epaper's iFlags. The plane layout is a property of the
+     * colour scheme in the config, which opendisplay_display_color already
+     * derives -- going through the driver's internal flags meant the same fact
+     * had two sources that could disagree. */
+    bool is4clr = opendisplay_color_bits_per_pixel(epd.colourScheme()) == 2;
+    bool is3clr = opendisplay_color_is_bitplanes(epd.colourScheme());
     int pitch = is4clr ? ((int)w + 3) / 4 : ((int)w + 7) / 8;
     uint8_t white_byte = is4clr ? 0x55u : 0xFFu;
     int domX, nameX, fwX, k1X, k2X, y;
@@ -506,9 +509,9 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
       k2X = pad;
     }
 
-    epd.setAddrWindow(0, 0, (int)w, (int)h);
-    epd.startWrite(is4clr ? PLANE_1 : PLANE_0);
-
+    /* No setAddrWindow/startWrite: the mode's sequence already ran up to its
+     * image marker, which is where the frame goes. The window registers and the
+     * image-write opcode are steps in that sequence. */
     for (y = 0; y < (int)h; y++) {
       memset(s_boot_row, white_byte, (size_t)pitch);
 
@@ -551,8 +554,7 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
 
       epd.writeData(s_boot_row, pitch);
     }
-    if (is3clr) {
-      epd.startWrite(PLANE_1);
+    if (is3clr && epd.nextPlane() == BBEP_SUCCESS) {
       for (y = 0; y < (int)h; y++) {
         memset(s_boot_row, 0x00u, (size_t)pitch);
         epd.writeData(s_boot_row, pitch);
@@ -560,23 +562,6 @@ static bool render_boot_screen(BBEPAPER &epd, const struct GlobalConfig *cfg)
     }
   }
   return true;
-}
-
-static bool wait_for_refresh(uint32_t timeout_ms)
-{
-  uint32_t elapsed = 0;
-  bool saw_busy = false;
-  while (elapsed < timeout_ms) {
-    bool busy = s_epd.isBusy();
-    if (busy) {
-      saw_busy = true;
-    } else if (saw_busy) {
-      return true;
-    }
-    sl_sleeptimer_delay_millisecond(50);
-    elapsed += 50;
-  }
-  return saw_busy && !s_epd.isBusy();
 }
 
 extern "C" void opendisplay_display_abort(void)
@@ -638,13 +623,13 @@ static int dw_stream_raw_bytes(const uint8_t *payload, uint32_t payload_len)
     if (chunk == 0u) {
       break;
     }
-    s_epd.writeData((uint8_t *)(void *)p, (int)chunk);
+    s_epd.writeData(p, (int)chunk);
     p += chunk;
     left -= chunk;
     s_written_bytes += chunk;
     remaining -= chunk;
     if (bitplanes && !s_plane2_started && s_plane_size > 0u && s_written_bytes >= s_plane_size) {
-      s_epd.startWrite(PLANE_1);
+      (void)s_epd.nextPlane();
       s_plane2_started = true;
     }
   }
@@ -692,32 +677,49 @@ static bool zlib_stream_to_direct_write(const uint8_t *data, uint32_t len, bool 
   }
 }
 
+/* Bring the panel up for one pass of a named mode. Replaces the old
+ * setPanelType(map(panel_ic_type)) + wake + sendPanelInitFull + setAddrWindow
+ * chain: there is no panel enum to map to any more, and the init is one
+ * config-supplied sequence rather than four library calls. */
+static bool panel_begin(const struct DisplayConfig *d, const char *mode, uint8_t pass)
+{
+  if (s_epd.setPanelType(0u) != BBEP_SUCCESS) {
+    printf("[OD] no drive data in config for this display\r\n");
+    return false;
+  }
+  s_epd.setRotation((int)d->rotation * 90);
+  s_epd.initIO(d->dc_pin, d->reset_pin, d->busy_pin, d->cs_pin, d->data_pin, d->clk_pin, 0);
+  if (s_epd.selectMode(mode) != BBEP_SUCCESS) {
+    printf("[OD] config declares no '%s' mode\r\n", mode);
+    return false;
+  }
+  return s_epd.beginPass(pass) == BBEP_SUCCESS;
+}
+
 extern "C" void opendisplay_display_boot_apply(void)
 {
   const struct DisplayConfig *d = display_cfg();
-  int panel;
   if (s_boot_applied || d == nullptr) {
     return;
   }
   s_boot_applied = true;
-  panel = opendisplay_map_epd(d->panel_ic_type);
-  if (panel == EP_PANEL_UNDEFINED) {
-    return;
-  }
-  s_epd = BBEPAPER();
+
   display_power_set(true);
-  if (s_epd.setPanelType(panel) != BBEP_SUCCESS) {
+  if (!panel_begin(d, "full", 0u)) {
     display_power_set(false);
     return;
   }
-  s_epd.setRotation((int)d->rotation * 90);
-  s_epd.initIO(d->dc_pin, d->reset_pin, d->busy_pin, d->cs_pin, d->data_pin, d->clk_pin, 0);
-  s_epd.wake();
-  s_epd.sendPanelInitFull();
+  /* The old code fell back to fillScreen(BBEP_WHITE) when the boot screen did
+   * not fit. There is no fillScreen now -- it was a framebuffer operation, and
+   * a blank panel is indistinguishable from a panel that was never driven, so
+   * the layout failure was invisible. Leave it unrefreshed and say so. */
   if (!render_boot_screen(s_epd, opendisplay_get_global_config())) {
-    s_epd.fillScreen(BBEP_WHITE);
+    printf("[OD] boot screen did not fit; skipping refresh\r\n");
+    s_epd.sleep(DEEP_SLEEP);
+    display_power_set(false);
+    return;
   }
-  (void)s_epd.refresh(REFRESH_FULL, true);
+  (void)s_epd.finishPass();
   s_epd.sleep(DEEP_SLEEP);
   display_power_set(false);
 }
@@ -734,32 +736,16 @@ extern "C" int opendisplay_display_direct_write_start(const uint8_t *payload, ui
   }
   dw_init_mark("after cfg");
 
-  int panel = opendisplay_map_epd(d->panel_ic_type);
-  if (panel == EP_PANEL_UNDEFINED) {
-    printf("[OD] dw start err bad panel_ic_type=%u\r\n", (unsigned)d->panel_ic_type);
-    return -2;
-  }
-
   opendisplay_display_abort();
   dw_init_mark("after abort");
   display_power_set(true);
-  s_epd = BBEPAPER();
-  if (s_epd.setPanelType(panel) != BBEP_SUCCESS) {
-    printf("[OD] dw start err setPanelType panel=%d\r\n", panel);
+  if (!panel_begin(d, "full", 0u)) {
+    printf("[OD] dw start err no drive data for panel_ic_type=%u\r\n",
+           (unsigned)d->panel_ic_type);
     display_power_set(false);
     return -3;
   }
-  dw_init_mark("after setPanelType");
-
-  s_epd.setRotation((int)d->rotation * 90);
-  s_epd.initIO(d->dc_pin, d->reset_pin, d->busy_pin, d->cs_pin, d->data_pin, d->clk_pin, 0);
-  dw_init_mark("after initIO");
-  s_epd.wake();
-  dw_init_mark("after wake (reset + busy)");
-  s_epd.sendPanelInitFull();
-  dw_init_mark("after pInitFull");
-  s_epd.setAddrWindow(0, 0, d->pixel_width, d->pixel_height);
-  dw_init_mark("after setAddrWindow");
+  dw_init_mark("after init seq (reset + registers)");
 
   s_color_scheme = d->color_scheme;
   s_plane_size = 0;
@@ -769,11 +755,8 @@ extern "C" int opendisplay_display_direct_write_start(const uint8_t *payload, ui
   }
   s_total_bytes =
     opendisplay_color_direct_write_total_bytes(d->pixel_width, d->pixel_height, s_color_scheme);
-  {
-    int sp = opendisplay_color_start_plane(s_color_scheme);
-    s_epd.startWrite(sp == 0 ? PLANE_0 : PLANE_1);
-  }
-  dw_init_mark("after startWrite");
+  /* No startWrite: beginPass stopped at the image marker, so the panel is
+   * already waiting for frame bytes. */
 
   s_written_bytes = 0;
   s_dw_chunk_n = 0;
@@ -883,14 +866,19 @@ extern "C" int opendisplay_display_direct_write_end(const uint8_t *payload, uint
     *refresh_ok = false;
   }
 
-  int refresh_mode = REFRESH_FULL;
-  if (payload != nullptr && payload_len >= 1u && payload[0] == 1u) {
-    refresh_mode = REFRESH_FAST;
+  /* The old API took a refresh MODE here (full/fast) and bb_epaper picked a
+   * waveform for it. Modes are now named config entries selected before the
+   * frame is sent, so by the time the frame is complete the waveform is already
+   * loaded -- there is nothing left to choose. A host wanting a fast refresh
+   * selects a "fast" mode at start; payload[0] is kept for wire compatibility
+   * and logged so a host still sending it can see it had no effect. */
+  if (payload != nullptr && payload_len >= 1u && payload[0] != 0u) {
+    printf("[OD] dw end note refresh_mode=%u ignored (mode chosen at start)\r\n",
+           (unsigned)payload[0]);
   }
 
-  printf("[OD] dw refresh start mode=%d\r\n", refresh_mode);
-  (void)s_epd.refresh(refresh_mode, false);
-  bool ok = wait_for_refresh(60000u);
+  printf("[OD] dw refresh start\r\n");
+  bool ok = (s_epd.finishPass() == BBEP_SUCCESS);
   printf("[OD] dw refresh done ok=%d busy=%d\r\n", (int)ok, (int)s_epd.isBusy());
   s_epd.sleep(DEEP_SLEEP);
   s_active = false;
@@ -930,23 +918,17 @@ extern "C" bool opendisplay_display_spi_raw_is_open(void)
 extern "C" int opendisplay_display_spi_raw_open(bool want_panel_init)
 {
   const struct DisplayConfig *d = display_cfg();
-  int panel;
 
   if (d == nullptr) {
     return -OD_ERR_SPI_RAW_NO_CONFIG;
   }
-  panel = opendisplay_map_epd(d->panel_ic_type);
-  if (panel == EP_PANEL_UNDEFINED) {
-    return -OD_ERR_SPI_RAW_PANEL;
-  }
 
-  /* Direct-write and raw share one BBEPAPER instance, so a raw session must
-   * take ownership rather than interleave with an in-flight transfer. */
+  /* Direct-write and raw share one driver instance, so a raw session must take
+   * ownership rather than interleave with an in-flight transfer. */
   opendisplay_display_abort();
 
   display_power_set(true);
-  s_epd = BBEPAPER();
-  if (s_epd.setPanelType(panel) != BBEP_SUCCESS) {
+  if (s_epd.setPanelType(0u) != BBEP_SUCCESS) {
     display_power_set(false);
     return -OD_ERR_SPI_RAW_PANEL;
   }
@@ -955,13 +937,21 @@ extern "C" int opendisplay_display_spi_raw_open(bool want_panel_init)
                d->data_pin, d->clk_pin, 0);
 
   /* Default is pins-and-power only: nothing is clocked out, so the caller can
-   * observe virgin register state and own the entire sequence. */
+   * observe virgin register state and own the entire sequence.
+   *
+   * want_panel_init runs the "full" mode's init up to its image marker, which
+   * is the closest equivalent of the old wake + sendPanelInitFull. It stops
+   * short of the frame, so the caller still owns everything after the
+   * registers -- which is the point of the raw session. */
   if (want_panel_init) {
-    s_epd.wake();
-    s_epd.sendPanelInitFull();
+    if (s_epd.selectMode("full") != BBEP_SUCCESS ||
+        s_epd.beginPass(0u) != BBEP_SUCCESS) {
+      display_power_set(false);
+      return -OD_ERR_SPI_RAW_PANEL;
+    }
   }
   s_spi_raw_open = true;
-  printf("[OD] spi_raw open panel=%d init=%d\r\n", panel, (int)want_panel_init);
+  printf("[OD] spi_raw open init=%d\r\n", (int)want_panel_init);
   return 0;
 }
 
@@ -975,9 +965,7 @@ extern "C" int opendisplay_display_spi_raw_cmd(const uint8_t *data, uint16_t len
   }
   s_epd.writeCmd(data[0]);
   if (len > 1u) {
-    /* writeData takes a non-const pointer; the payload buffer is ours and the
-     * driver does not retain it. */
-    s_epd.writeData((uint8_t *)(void *)&data[1], (int)(len - 1u));
+    s_epd.writeRaw(&data[1], (int)(len - 1u));
   }
   return 0;
 }
@@ -990,7 +978,7 @@ extern "C" int opendisplay_display_spi_raw_data(const uint8_t *data, uint16_t le
   if (data == nullptr || len == 0u) {
     return -OD_ERR_SPI_RAW_BAD_ARGS;
   }
-  s_epd.writeData((uint8_t *)(void *)data, (int)len);
+  s_epd.writeRaw(data, (int)len);
   return 0;
 }
 

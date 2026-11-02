@@ -180,7 +180,6 @@ add_library(slc OBJECT
     "../opendisplay_config_parser.c"
     "../opendisplay_display_color.c"
     "../opendisplay_display.cpp"
-    "../opendisplay_epd_map.c"
     "../opendisplay_led.c"
     "../qr/qrcode.c"
     "../app_bm.c"
@@ -189,8 +188,9 @@ add_library(slc OBJECT
     "../autogen/sl_event_handler.c"
     "../autogen/sl_power_manager_handler.c"
     "../main.c"
-    "../third_party/bb_epaper/src/bb_epaper.cpp"
-    "../third_party/bb_epaper/src/Group5.cpp"
+    "../src/od_epd.c"
+    "../src/od_epd_io_silabs.c"
+    "../src/od_epd_adapter.cpp"
     "../third_party/uzlib/src/od_zlib_stream.c"
 )
 
@@ -201,7 +201,6 @@ target_include_directories(slc PUBLIC
    "../."
    "../include"
    "../third_party/segger_rtt"
-   "../third_party/bb_epaper/src"
    "../third_party/uzlib/src"
     "../${COPIED_SDK_PATH}/devices/platform/Device/SiliconLabs/EFR32BG22/Include"
     "../${COPIED_SDK_PATH}/platform_common_apps/app/common/util/app_assert"
