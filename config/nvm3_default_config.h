@@ -19,7 +19,15 @@
 // <i> Max NVM3 object size that can be stored.
 // <i> Must cover opendisplay config record: 16-byte header + MAX_CONFIG_SIZE (4080).
 // <i> Keep in sync with NVM3_MAX_OBJECT_SIZE in cmake_gcc/opendisplay-bg22.cmake.
-#define NVM3_DEFAULT_MAX_OBJECT_SIZE  2112
+// <i>
+// <i> THIS VALUE AND NVM3_DEFAULT_NVM_SIZE MOVE TOGETHER. nvm3_open() rejects the
+// <i> instance when nvmSize < thrSize, and thrSize scales with max-object:
+// <i>   max-object 2112 -> thrSize 20588   max-object 4096 -> thrSize 24556
+// <i> With the old 24576-byte region, 4096 cleared the threshold by TWENTY BYTES
+// <i> and failed in practice: NVM3 would not open, the stored config read back as
+// <i> 0 bytes, and every config write NACKed. Measured on ODBB1B76 2026-11-02.
+// <i> At 32768 the same setting has ~8 KB of margin.
+#define NVM3_DEFAULT_MAX_OBJECT_SIZE  4096
 #endif
 
 #ifndef NVM3_DEFAULT_REPACK_HEADROOM
@@ -35,9 +43,22 @@
 // <o NVM3_DEFAULT_NVM_SIZE> NVM3 Default Instance Size
 // <i> Size of the NVM3 storage region in flash. This size should be aligned with
 // <i> the flash page size of the device.
-// <i> EFR32BG22: FLASH_PAGE_SIZE 8192; 3 pages (24576) is enough for max-object 2112.
-// <i> Keep size/base unchanged across upgrades — growing it invalidates NVM3 (needs chip erase).
-#define NVM3_DEFAULT_NVM_SIZE  24576
+// <i> EFR32BG22: FLASH_PAGE_SIZE 8192; 4 pages (32768) supports max-object 4096
+// <i> with ~8 KB of margin. 3 pages (24576) only supported max-object 2112.
+// <i>
+// <i> GROWING THIS INVALIDATES EVERYTHING IN NVM3, INCLUDING THE ENCRYPTION KEY.
+// <i> It does NOT need a chip erase, which an earlier version of this comment
+// <i> claimed. Measured: a device whose NVM3 cannot be opened still boots,
+// <i> advertises and accepts an UNENCRYPTED config write, because with no stored
+// <i> security packet there is nothing to authenticate against. So the recovery
+// <i> is: read the config off the device, OTA, then write it back over BLE. Read
+// <i> it FIRST -- afterwards the key is gone and you cannot re-derive it.
+// <i>
+// <i> Flash cost: NVM3 sits at the top of the app region (0x56000) and grows
+// <i> downward. The linker ASSERT below the .nvm section turns an overflow into a
+// <i> build failure, not a bricked device. At 32768 the gap between the end of
+// <i> code and NVM3 is ~10.8 KB; a 5th page would leave only ~2.6 KB.
+#define NVM3_DEFAULT_NVM_SIZE  32768
 #endif
 
 // </h>

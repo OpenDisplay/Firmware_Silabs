@@ -4,27 +4,24 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* 2096 = NVM3_DEFAULT_MAX_OBJECT_SIZE (2112) minus the 16-byte record header.
+/* 4080 = NVM3_DEFAULT_MAX_OBJECT_SIZE (4096) minus the 16-byte record header.
  *
- * I PREVIOUSLY SET THIS TO 4080 AND IT BROKE A DEVICE. The reasoning was that
- * NVM3's hard per-object cap is 4096 (NVM3_MAX_OBJECT_SIZE_HIGH_LIMIT), so 4080
- * must be the ceiling. That cap is a bound on the SETTING, not a promise the
- * configured NVM3 region can store such an object: the limit that actually
- * binds is the 24576-byte region, and nvm3_default_config.h says so in its own
- * comment -- "3 pages (24576) is enough for max-object 2112".
+ * WHAT BINDS THIS IS THE NVM3 REGION SIZE, NOT NVM3'S PER-OBJECT CAP. An earlier
+ * version of this file set 4080 while the region was still 24576 bytes, reading
+ * NVM3_MAX_OBJECT_SIZE_HIGH_LIMIT (4096) as the ceiling. That constant bounds
+ * the SETTING; it is not a promise the configured region can hold such an
+ * object. nvm3_open() rejects the instance when nvmSize < thrSize, and thrSize
+ * scales with max-object -- at 24576 the margin was twenty bytes, and in
+ * practice NVM3 would not open at all: stored config read back as 0 bytes and
+ * every write NACKed (measured on ODBB1B76, 2026-11-02).
  *
- * Measured on ODBB1B76 after OTAing a build with max-object 4096: the stored
- * config came back as 0 bytes and every config write NACKed at the final chunk,
- * i.e. at saveConfig's nvm3_writeData. Raising max-object changes the NVM3
- * instance parameters, which invalidates the existing contents.
- *
- * To go beyond 2096 the NVM3 region has to grow, and that is not a free change:
- * nvm3_default_config.h warns that changing size or base invalidates NVM3 and
- * needs a chip erase, which needs a wired programmer -- not an OTA.
+ * 4080 is valid now only because NVM3_DEFAULT_NVM_SIZE was raised to 32768 in
+ * the same change. The two move together -- see nvm3_default_config.h, which
+ * also records why a resize does NOT need a chip erase.
  *
  * The staging buffer below is sized by this for the config WRITE path, which is
  * transient; see od_cfg_index.h for why nothing holds it afterwards. */
-#define MAX_CONFIG_SIZE 2096
+#define MAX_CONFIG_SIZE 4080
 
 typedef struct {
   uint32_t magic;
