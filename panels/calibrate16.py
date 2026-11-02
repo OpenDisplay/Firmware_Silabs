@@ -42,8 +42,16 @@ VIS_TOP = 136          # first panel row the camera can see
 GRID = 4
 
 
-def build_pass_frame(w: int, h: int, pass_no: int, code_map: list[int]) -> bytes:
-    """One pass's frame: a 4x4 grid of palette entries in the visible rows."""
+def build_pass_frame(w: int, h: int, pass_no: int, _unused=None) -> bytes:
+    """One pass's frame: a 4x4 grid of palette entries in the visible rows.
+
+    NO code_map IS APPLIED, deliberately. PALETTE holds PANEL 2-bit codes, not
+    logical BWRY colours -- show16_raw.py, the renderer these triples came from
+    and which produced the reference image, writes them straight to the panel
+    (`PALETTE[...][pass_no] & 3`). code_map exists to turn a LOGICAL colour into
+    a panel code for the 4-colour path; running palette codes through it maps
+    2->3 and 3->2, which swaps yellow and red in every pass.
+    """
     cell_h = (h - VIS_TOP) // GRID
     cell_w = w // GRID
     out = bytearray()
@@ -56,7 +64,7 @@ def build_pass_frame(w: int, h: int, pass_no: int, code_map: list[int]) -> bytes
                 r = min((y - VIS_TOP) // cell_h, GRID - 1)
                 c = min(x // cell_w, GRID - 1)
                 logical = PALETTE[r * GRID + c][pass_no]
-            acc = ((acc << 2) | (code_map[logical & 3] & 3)) & 0xFF
+            acc = ((acc << 2) | (logical & 3)) & 0xFF
             n += 1
             if n == 4:
                 out.append(acc)
@@ -121,7 +129,7 @@ async def render(link: str, chunk: int, ack_every: int) -> None:
                     elif op[0] == "delay":
                         await asyncio.sleep(op[1] / 1000)
                     elif op[0] == "image":
-                        await raw.data(build_pass_frame(w, h, p, panel["code_map"]),
+                        await raw.data(build_pass_frame(w, h, p),
                                        stream=True)
                     elif op[0] == "lut":
                         await raw.data(lut)
