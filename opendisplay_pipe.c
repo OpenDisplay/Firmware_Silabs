@@ -55,7 +55,7 @@ static od_nfc_write_chunk_t s_nfc_write_chunk;
 #define OD_ALLOW_PLAINTEXT_WITH_SECURITY 0
 #endif
 
-static void pipe_send(uint8_t connection, const uint8_t *data, uint16_t len);
+static bool pipe_send(uint8_t connection, const uint8_t *data, uint16_t len);
 
 static void cfg_chunk_reset(void)
 {
@@ -500,19 +500,47 @@ static bool encrypt_response_payload(const uint8_t *plain,
   return true;
 }
 
-static void pipe_send_raw(uint8_t connection, const uint8_t *data, uint16_t len)
+/* A notification the stack has no buffer for is NOT an error to log and move
+ * past -- it is a lost frame, and for a chunked transfer that means a silently
+ * truncated payload.
+ *
+ * Measured: reading a 2087-byte config needs 22 back-to-back notifications and
+ * the host received 1223 bytes. The loss was not at a chunk boundary, so it was
+ * not the firmware's chunk cap -- it was this function dropping frames once the
+ * stack ran out of buffers. The old 645-byte config needed 7 notifications and
+ * never exposed it.
+ *
+ * SL_STATUS_NO_MORE_RESOURCE is backpressure, not failure: buffers are freed by
+ * the link layer in interrupt context as frames go out, so waiting lets them
+ * drain. The retry is bounded so a dead link fails loudly instead of hanging
+ * the BLE event handler forever.
+ */
+#define PIPE_NOTIFY_RETRIES 200u
+#define PIPE_NOTIFY_WAIT_MS 2u
+
+static bool pipe_send_raw(uint8_t connection, const uint8_t *data, uint16_t len)
 {
   sl_status_t sc;
   if (!s_notify || len == 0u) {
-    return;
+    return false;
   }
-  sc = sl_bt_gatt_server_send_notification(connection, s_pipe_attr, len, data);
-  if (sc != SL_STATUS_OK) {
-    printf("[OD] pipe notify sc=0x%04lX len=%u\r\n", (unsigned long)sc, (unsigned)len);
+  for (uint32_t i = 0; i <= PIPE_NOTIFY_RETRIES; i++) {
+    sc = sl_bt_gatt_server_send_notification(connection, s_pipe_attr, len, data);
+    if (sc == SL_STATUS_OK) {
+      return true;
+    }
+    if (sc != SL_STATUS_NO_MORE_RESOURCE) {
+      printf("[OD] pipe notify sc=0x%04lX len=%u\r\n", (unsigned long)sc, (unsigned)len);
+      return false;
+    }
+    sl_sleeptimer_delay_millisecond(PIPE_NOTIFY_WAIT_MS);
   }
+  printf("[OD] pipe notify starved after %u retries, len=%u -- frame DROPPED\r\n",
+         (unsigned)PIPE_NOTIFY_RETRIES, (unsigned)len);
+  return false;
 }
 
-static void pipe_send(uint8_t connection, const uint8_t *data, uint16_t len)
+static bool pipe_send(uint8_t connection, const uint8_t *data, uint16_t len)
 {
   uint8_t enc[544];
   uint8_t err[3];
@@ -522,28 +550,25 @@ static void pipe_send(uint8_t connection, const uint8_t *data, uint16_t len)
   bool force_plain;
 
   if (len == 0u) {
-    return;
+    return false;
   }
   if (len < 2u) {
-    pipe_send_raw(connection, data, len);
-    return;
+    return pipe_send_raw(connection, data, len);
   }
   status = data[0];
   cmd = data[1];
   force_plain = (status == RESP_AUTH_REQUIRED || status == 0xFFu || cmd == RESP_AUTHENTICATE
                  || cmd == RESP_FIRMWARE_VERSION || cmd == RESP_MSD_READ);
   if (force_plain || !session_alive()) {
-    pipe_send_raw(connection, data, len);
-    return;
+    return pipe_send_raw(connection, data, len);
   }
   if (encrypt_response_payload(data, len, enc, &enc_len)) {
-    pipe_send_raw(connection, enc, enc_len);
-    return;
+    return pipe_send_raw(connection, enc, enc_len);
   }
   err[0] = 0x00u;
   err[1] = cmd;
   err[2] = 0xFFu;
-  pipe_send_raw(connection, err, sizeof(err));
+  return pipe_send_raw(connection, err, sizeof(err));
 }
 
 static void reply_firmware_version(uint8_t connection)
@@ -786,7 +811,16 @@ static void handle_config_read(uint8_t connection)
       break;
     }
 
-    pipe_send(connection, s_cfg_read_buf, response_len);
+    if (!pipe_send(connection, s_cfg_read_buf, response_len)) {
+      /* Stop rather than carry on past a lost frame. Continuing would leave a
+       * HOLE in the middle of the config and the host would assemble silently
+       * corrupt bytes; stopping makes it a short read, which the host already
+       * detects as TruncatedConfigError. */
+      printf("[OD] config read aborted at chunk %u (%lu/%lu B sent)\r\n",
+             (unsigned)chunk_number, (unsigned long)offset,
+             (unsigned long)config_len);
+      return;
+    }
     offset += chunk_size;
     remaining -= chunk_size;
     chunk_number++;
