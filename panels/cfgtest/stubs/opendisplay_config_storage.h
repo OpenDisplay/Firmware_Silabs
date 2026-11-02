@@ -1,0 +1,4 @@
+#ifndef STUB_CFG_STORAGE_H
+#define STUB_CFG_STORAGE_H
+#define MAX_CONFIG_SIZE 4080
+#endif

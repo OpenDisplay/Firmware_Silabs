@@ -3,6 +3,7 @@
  */
 #include "od_cfg_index.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "nvm3_default.h"
@@ -14,6 +15,7 @@
 #define OD_NVM3_CONFIG_KEY ((nvm3_ObjectKey_t)0x0F4401u)
 #define CONFIG_STORAGE_MAGIC 0xDEADBEEFu
 #define OD_CFG_HDR_SZ 16u    /* magic+version+crc+data_len, asserted in storage.c */
+#define OD_CFG_PREAMBLE_SZ 3u /* blob starts [0x00 0x00][version] before any packet */
 
 static od_cfg_entry_t s_index[OD_CFG_INDEX_MAX];
 static uint8_t        s_count;
@@ -23,6 +25,16 @@ static uint32_t       s_blob_len;
  * an unknown id has to abandon the rest of the blob -- there is no length on
  * the wire to skip by. Keeping the table here (rather than re-deriving it in
  * the walker) is what would let a size-table skip model be switched on later. */
+/* EVERY packet type that can appear before the drive packets must be here, not
+ * just the ones this file cares about. An unknown id abandons the rest of the
+ * blob, and the drive packets sit at the END of the id space -- so one missing
+ * entry means the walk stops short and the panel has no drive data at all.
+ *
+ * SECURITY (0x27) was missing from the first version of this table. It sorts
+ * before 0x2E, so the walk stopped at it on every encrypted device: the index
+ * came back with the low-numbered packets only and od_epd_desc_from_config
+ * always failed. Nothing in the build or the host-side round-trip could catch
+ * that, because both of those exercise the blob WITHOUT a security packet. */
 static uint16_t body_size(uint8_t type)
 {
     switch (type) {
@@ -35,6 +47,7 @@ static uint16_t body_size(uint8_t type)
         case CONFIG_PKT_DATA_BUS:      return 30u;
         case CONFIG_PKT_BINARY_INPUT:  return 30u;
         case CONFIG_PKT_WIFI:          return 160u;
+        case CONFIG_PKT_SECURITY:      return 64u;
         case CONFIG_PKT_TOUCH:         return CONFIG_PKT_TOUCH_SIZE;
         case CONFIG_PKT_BUZZER:        return CONFIG_PKT_BUZZER_SIZE;
         case CONFIG_PKT_NFC:           return 32u;
@@ -93,23 +106,43 @@ int od_cfg_index_build(void)
     }
     s_blob_len = data_len;
 
-    /* Walk: [instance][type][body...] repeated, then a 2-byte CRC tail.
-     * Two bytes at a time out of flash -- no buffer, no second copy. */
-    uint32_t off = 0;
+    /* THE PACKETS DO NOT START AT OFFSET 0.
+     *
+     * The blob is [0x00 0x00][version][packets...][crc16], per
+     * serialize_config() in py-opendisplay and the skip in
+     * opendisplay_config_parser.c. Walking from 0 reads the two padding bytes
+     * as a header, gets type 0x00, finds no size for it and stops immediately
+     * -- producing an empty index that looks like "this device has no drive
+     * data" rather than like a bug. */
+    uint32_t off = OD_CFG_PREAMBLE_SZ;
     while (off + 2u + 2u <= data_len && s_count < OD_CFG_INDEX_MAX) {
         uint8_t ph[2];
+        uint8_t b2[2] = { 0u, 0u };
         if (!read_blob(off, ph, 2u)) {
             break;
         }
         uint16_t bsz = body_size(ph[1]);
         if (bsz == 0u) {
-            break;      /* unknown id: documented behaviour is to stop here */
+            /* Documented TLV behaviour is to abandon the tail. Say so: a type
+             * missing from body_size() is indistinguishable from a genuinely
+             * unknown one, and silence here cost a whole debugging session. */
+            printf("[OD] cfg index: unknown packet 0x%02X at %u, "
+                   "abandoning %u B of tail\r\n",
+                   (unsigned)ph[1], (unsigned)off,
+                   (unsigned)(data_len - off));
+            break;
         }
         if (off + 2u + bsz > data_len - 2u) {
             break;      /* body would run past the CRC tail */
         }
+        /* Identity comes from the body: body[0] instance_number, body[1] the
+         * per-type discriminator. See the note in od_cfg_index.h. */
+        if (bsz >= 2u) {
+            (void)read_blob(off + 2u, b2, 2u);
+        }
         s_index[s_count].type     = ph[1];
-        s_index[s_count].instance = ph[0];
+        s_index[s_count].instance = b2[0];
+        s_index[s_count].sub      = b2[1];
         s_index[s_count].offset   = (uint16_t)(off + 2u);
         s_index[s_count].len      = bsz;
         s_count++;

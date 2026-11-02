@@ -78,13 +78,16 @@ static uint16_t io_seq_read(uint8_t mode, uint16_t off, uint8_t *dst, uint16_t l
     return (uint16_t)od_cfg_read(e, (uint16_t)(MODE_OFF_SEQ + off), dst, len);
 }
 
-/* A waveform slot is found by its instance byte, which the host sets to the
- * slot number -- that is why od_cfg_entry_t carries `instance` at all. */
+/* A waveform slot is matched on `sub` (body[1] = lut_slot), NOT on the
+ * packet-header byte. The header's first byte is a don't-care that the two
+ * writers disagree about -- py-opendisplay puts the instance index there, the
+ * web toolbox puts a running counter -- so matching on it would make a
+ * toolbox-built config unable to find its own waveforms. */
 static const od_cfg_entry_t *find_lut(uint8_t slot)
 {
     for (int i = 0; i < od_cfg_index_count(); i++) {
         const od_cfg_entry_t *e = od_cfg_index_entry(i);
-        if (e != NULL && e->type == CONFIG_PKT_DISPLAY_LUT && e->instance == slot) {
+        if (e != NULL && e->type == CONFIG_PKT_DISPLAY_LUT && e->sub == slot) {
             return e;
         }
     }

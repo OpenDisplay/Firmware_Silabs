@@ -33,10 +33,21 @@ extern "C" {
 
 typedef struct {
     uint8_t  type;      /* config packet id (0x01, 0x20, 0x2E, ...) */
-    uint8_t  instance;  /* instance_number byte that preceded it */
+    uint8_t  instance;  /* instance_number -- body[0], NOT the header byte */
+    uint8_t  sub;       /* body[1]: mode_index for 0x2E, lut_slot for 0x2F */
     uint16_t offset;    /* byte offset of the packet BODY within the blob */
     uint16_t len;       /* body length in bytes */
 } od_cfg_entry_t;
+
+/* IDENTITY IS IN THE BODY, NOT THE HEADER.
+ *
+ * A packet on the wire is [packet_number][packet_type][body]. It is tempting to
+ * treat packet_number as the instance, and py-opendisplay's serializer does
+ * write the instance index there -- but the toolbox writes a RUNNING COUNTER,
+ * and the shipping parser (opendisplay_config_parser.c) reads neither: it takes
+ * instance_number from body[0]. So packet_number is a don't-care byte that two
+ * writers already disagree about, and matching on it would make a config built
+ * by the web tool fail to find its own packets. */
 
 /* Build the index by walking the stored blob once. Returns entry count, or
  * -1 if the stored config is missing or fails CRC. */
