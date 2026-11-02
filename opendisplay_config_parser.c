@@ -232,10 +232,6 @@ bool parseConfigBytes(uint8_t* configData, uint32_t configLen, struct GlobalConf
                 offset += CONFIG_PKT_DISPLAY_PANEL_SIZE;
                 break;
 
-            case CONFIG_PKT_DISPLAY_PALETTE: // 0x32
-                offset += CONFIG_PKT_DISPLAY_PALETTE_SIZE;
-                break;
-
             case CONFIG_PKT_LED: // led - parse but don't log
                 if (offset > configLen) {
                     printf("Offset overflow before led\r\n");

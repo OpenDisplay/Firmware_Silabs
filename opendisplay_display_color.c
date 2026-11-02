@@ -19,7 +19,12 @@ int opendisplay_color_bits_per_pixel(uint8_t color_scheme)
   if (color_scheme == OD_COLOR_SCHEME_BWGBRY) {
     return 4;
   }
-  if (color_scheme == OD_COLOR_SCHEME_BWRY || color_scheme == OD_COLOR_SCHEME_GRAY4) {
+  /* BWRY16 packs exactly like BWRY -- 2 bits per pixel, one plane. The 16
+   * colours come from sending the frame once PER PASS, which is the mode's
+   * business (0x2E pass count), not the pixel format's. Treating it as a
+   * different packing here would make every frame the wrong size. */
+  if (color_scheme == OD_COLOR_SCHEME_BWRY || color_scheme == OD_COLOR_SCHEME_BWRY16
+      || color_scheme == OD_COLOR_SCHEME_GRAY4) {
     return 2;
   }
   if (color_scheme == OD_COLOR_SCHEME_GRAY16) {

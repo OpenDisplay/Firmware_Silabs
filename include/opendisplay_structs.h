@@ -550,6 +550,7 @@ enum ColorScheme {
     OD_COLOR_SCHEME_GRAY16       = 6,   /**< @doc "4bpp 16-level gray" */
     OD_COLOR_SCHEME_SEVEN_COLOR  = 7,   /**< @doc "7-color (Spectra/ACeP 7, config.yaml '7color')" @changed "2.0: value 7 is SEVEN_COLOR; the former COLOR_SCHEME_GRAY8=7 was a mistake (gray8 is not a real scheme) and is removed -- not renumbered." */
     OD_COLOR_SCHEME_BWGBRY_SPLIT = 8,   /**< @doc "Spectra 6 nibbles, left-half plane then right-half plane (dual-CS panels, no device framebuffer)" */
+    OD_COLOR_SCHEME_BWRY16       = 9,   /**< @doc "BWRY driven multi-pass for 16 colours: 2bpp per pass, one frame per pass, a pixel's colour set by its code in ALL passes. Pixel packing is identical to BWRY (3) -- the difference is the number of frames, which comes from the mode's pass count (0x2E), not from this value. Exists so a host image pipeline can select the 16-entry palette; the DEVICE needs only the mode." @since 2.2 */
     OD_COLOR_SCHEME_RGB565       = 100, /**< @doc "RGB565 (non-epaper)" */
     OD_COLOR_SCHEME_RGB888       = 101, /**< @doc "RGB888 (non-epaper)" */
     OD_COLOR_SCHEME_RGB16BPC     = 102  /**< @doc "16 bits per channel (non-epaper)" */
@@ -804,33 +805,6 @@ struct DisplayPanelConfig {
     uint8_t  reserved[7];        /**< @reserved @doc "future use; must be 0." */
 } __attribute__((packed));
 OD_STATIC_ASSERT(sizeof(struct DisplayPanelConfig) == 36, "DisplayPanelConfig wire size");
-
-/** @struct DisplayPaletteConfig  @packet 0x32  @repeatable max=8
- *  @doc "Per-entry ENCODING of a mode's palette: which per-pass codes produce
- *  each colour. 24 bytes."
- *
- * A palette entry is a tuple of 2-bit codes, one per pass -- the 16-colour BWRY
- * mode sends three frames and a pixel's colour is set by its code in all three.
- * Nothing else in the config records that mapping, so without this packet a
- * measured colour cannot be reproduced and a host cannot encode a frame.
- *
- * Deliberately separate from 0x30 display_calibration, which holds what those
- * entries MEASURED as. The encoding is a property of the mode and is identical
- * across units; the measurements are per-unit (two same-part-number 2.9" panels
- * differ by dE00 6.40). A mode may legitimately have one without the other.
- */
-struct DisplayPaletteConfig {
-    uint8_t instance_number; /**< @doc "display instance." */
-    uint8_t mode_index;      /**< @doc "mode these entries belong to." */
-    uint8_t entry_count;     /**< @doc "valid entries in codes[] (<=16)." */
-    uint8_t palette_flags;   /**< @bits DisplayPaletteFlags */
-    uint8_t codes[16];       /**< @doc "per entry, packed 2 bits per pass: pass0 in bits 5-4, pass1 in bits 3-2, pass2 in bits 1-0. Bits 7-6 reserved." */
-    uint8_t reserved[4];     /**< @reserved @doc "future use; must be 0." */
-} __attribute__((packed));
-OD_STATIC_ASSERT(sizeof(struct DisplayPaletteConfig) == 24, "DisplayPaletteConfig wire size");
-
-/* DisplayPaletteConfig.palette_flags @bits DisplayPaletteFlags */
-#define OD_PALETTE_FLAG_ORDERED_BY_L 0x01u /* @doc "entries sorted by measured L*" */
 
 /* DisplayPanelConfig.panel_flags @bits DisplayPanelFlags */
 #define OD_PANEL_FLAG_BUSY_USABLE  (1u << 0) /* @doc "the BUSY line can be polled" */
