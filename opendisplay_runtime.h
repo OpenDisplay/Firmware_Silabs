@@ -29,6 +29,14 @@ struct GlobalConfig {
   struct PowerOption power_option;
   struct DisplayConfig displays[4];
   uint8_t display_count;
+  /* Panel DRIVE data (minor 1.6). With these present the firmware needs no
+   * panel table: od_epd takes every command byte, delay, LUT placement and
+   * BUSY policy from here. ~1.6 KB of RAM on a 32 KB part, which is the price
+   * of not having panel behaviour welded into a vendored library. */
+  struct DisplayModeConfig display_modes[OD_MAX_MODES_PER_DISPLAY];
+  uint8_t display_mode_count;
+  struct DisplayLutConfig display_luts[OD_MAX_LUT_SLOTS];
+  uint8_t display_lut_count;
   struct LedConfig leds[4];
   uint8_t led_count;
   struct SensorData sensors[4];

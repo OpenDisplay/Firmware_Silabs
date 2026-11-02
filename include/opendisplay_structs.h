@@ -720,6 +720,51 @@ struct DisplayConfig {
 } __attribute__((packed));
 OD_STATIC_ASSERT(sizeof(struct DisplayConfig) == 46, "DisplayConfig wire size");
 
+
+/* ---------------------------------------------------------------------------
+ * 0x2E display_mode / 0x2F display_lut  (minor 1.6)
+ *
+ * Panel DRIVE data, which used to live in the vendored bb_epaper library. With
+ * these the firmware carries no panel table at all: every command byte, delay,
+ * LUT placement and BUSY policy arrives in the config.
+ *
+ * Appended at the end of the packet-id space on purpose -- shipped firmware
+ * abandons the rest of the blob at the first unknown id, so new types must sit
+ * behind everything old.
+ * ------------------------------------------------------------------------ */
+#define OD_SEQ_FIELD_BYTES 128u
+#define OD_LUT_FIELD_BYTES 535u
+#define OD_MAX_MODES_PER_DISPLAY 4u
+#define OD_MAX_LUT_SLOTS 2u   /* 16-colour needs 2: colour + edit (shared by
+                               * passes 1-2), so 3 passes cost 2 slots. */
+
+struct DisplayModeConfig {
+    uint8_t  instance_number;
+    uint8_t  mode_index;
+    char     mode_name[12];
+    uint8_t  passes;
+    uint8_t  lut_slot[4];   /* per pass; 0xFF = no custom LUT */
+    uint8_t  vsn1[4];       /* per pass wave-header byte 3 patch; 0 = none */
+    uint8_t  mode_flags;    /* bit0 = analog params come from the LUT header */
+    int8_t   temp_min_c;    /* advisory; the HOST enforces the gate */
+    int8_t   temp_max_c;
+    uint8_t  temp_policy;
+    uint16_t seq_len;
+    uint8_t  init_seq[OD_SEQ_FIELD_BYTES];
+} __attribute__((packed));
+
+struct DisplayLutConfig {
+    uint8_t  instance_number;
+    uint8_t  lut_slot;
+    uint16_t lut_len;
+    uint16_t crc16;         /* slot failing CRC is treated as ABSENT, so an
+                             * interrupted write falls back to no-custom-LUT
+                             * instead of driving a half-written waveform */
+    uint8_t  data[OD_LUT_FIELD_BYTES];
+} __attribute__((packed));
+
+#define OD_MODE_FLAG_ANALOG_FROM_WAVE 0x01u
+
 /* -----------------------------------------------------------------------
  * 0x21  led
  * ----------------------------------------------------------------------- */

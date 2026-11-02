@@ -23,6 +23,12 @@
 #define CONFIG_PKT_FLASH          0x2B
 #define CONFIG_PKT_DATA_EXTENDED  0x2C
 #define CONFIG_PKT_FINDMY         0x2D
+/* Panel drive data, minor 1.6. Appended at the END of the id space: shipped
+ * firmware abandons the blob tail at the first unknown id, so these must sit
+ * behind every packet an older device understands. */
+#define CONFIG_PKT_DISPLAY_MODE   0x2E
+#define CONFIG_PKT_DISPLAY_LUT    0x2F
+#define CONFIG_PKT_DISPLAY_CALIB  0x30
 
 /* Wire sizes of config packets Silabs does not consume itself (touch/buzzer are
  * handled by the main MCU, data_extended is host-only). They must still be
@@ -31,6 +37,9 @@
 #define CONFIG_PKT_BUZZER_SIZE         32
 #define CONFIG_PKT_DATA_EXTENDED_SIZE  288
 #define CONFIG_PKT_FINDMY_SIZE         128
+#define CONFIG_PKT_DISPLAY_MODE_SIZE   157
+#define CONFIG_PKT_DISPLAY_LUT_SIZE    541
+#define CONFIG_PKT_DISPLAY_CALIB_SIZE  100
 
 #define GPIO_PIN_UNUSED 0xFF
 

@@ -207,6 +207,34 @@ bool parseConfigBytes(uint8_t* configData, uint32_t configLen, struct GlobalConf
                 }
                 break;
                 
+            case CONFIG_PKT_DISPLAY_MODE: // 0x2E display_mode
+                if (globalConfig->display_mode_count < OD_MAX_MODES_PER_DISPLAY &&
+                    offset + sizeof(struct DisplayModeConfig) <= configLen - 2) {
+                    memcpy(&globalConfig->display_modes[globalConfig->display_mode_count],
+                           &configData[offset], sizeof(struct DisplayModeConfig));
+                    globalConfig->display_mode_count++;
+                    offset += sizeof(struct DisplayModeConfig);
+                } else {
+                    offset += sizeof(struct DisplayModeConfig);
+                }
+                break;
+
+            case CONFIG_PKT_DISPLAY_LUT: // 0x2F display_lut
+                if (globalConfig->display_lut_count < OD_MAX_LUT_SLOTS &&
+                    offset + sizeof(struct DisplayLutConfig) <= configLen - 2) {
+                    memcpy(&globalConfig->display_luts[globalConfig->display_lut_count],
+                           &configData[offset], sizeof(struct DisplayLutConfig));
+                    globalConfig->display_lut_count++;
+                    offset += sizeof(struct DisplayLutConfig);
+                } else {
+                    offset += sizeof(struct DisplayLutConfig);
+                }
+                break;
+
+            case CONFIG_PKT_DISPLAY_CALIB: // 0x30 - stored by the HOST, inert here
+                offset += CONFIG_PKT_DISPLAY_CALIB_SIZE;
+                break;
+
             case CONFIG_PKT_LED: // led - parse but don't log
                 if (offset > configLen) {
                     printf("Offset overflow before led\r\n");
