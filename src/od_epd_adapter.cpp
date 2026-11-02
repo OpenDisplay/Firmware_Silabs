@@ -54,7 +54,9 @@ static_assert(offsetof(struct DisplayPanelConfig, sleep_seq) == PANEL_OFF_SLEEPS
 /* The adapter is a singleton in practice (one panel, one SPI bus), and the io
  * vtable takes plain function pointers, so the lookup state lives at file
  * scope rather than being smuggled through a context pointer. */
-static uint8_t s_mode_entry_idx[OD_EPD_MAX_MODES];  /* mode -> od_cfg index */
+/* mode_index -> od_cfg index. Sized by the config index, not by a mode cap:
+ * how many update modes a display may have is now a config question. */
+static uint8_t s_mode_entry_idx[OD_CFG_INDEX_MAX];
 static uint8_t s_mode_entry_count;
 static od_epd_io_t s_io;
 static uint8_t s_desc_diag;   /* see od_epd_desc_diag() */
@@ -77,6 +79,37 @@ static uint16_t io_seq_read(uint8_t mode, uint16_t off, uint8_t *dst, uint16_t l
         return 0u;
     }
     return (uint16_t)od_cfg_read(e, (uint16_t)(MODE_OFF_SEQ + off), dst, len);
+}
+
+/* Load one mode's header on selection. Only the ACTIVE mode is resident. */
+static bool io_mode_read(uint8_t index, od_epd_mode_t *out)
+{
+    uint8_t h[MODE_OFF_SEQ];
+
+    if (out == NULL || index >= s_mode_entry_count) {
+        return false;
+    }
+    const od_cfg_entry_t *e = od_cfg_index_entry((int)s_mode_entry_idx[index]);
+    if (e == NULL || od_cfg_read(e, 0u, h, sizeof(h)) != sizeof(h)) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    memcpy(out->name, &h[MODE_OFF_NAME], sizeof(out->name));
+    out->name[sizeof(out->name) - 1u] = '\0';
+    out->passes = h[MODE_OFF_PASSES];
+    memcpy(out->lut_slot, &h[MODE_OFF_SLOT], 4);
+    memcpy(out->vsn1, &h[MODE_OFF_VSN1], 4);
+    out->temp_min_c = (int8_t)h[MODE_OFF_TMIN];
+    out->temp_max_c = (int8_t)h[MODE_OFF_TMIN + 1u];
+    out->temp_policy = h[MODE_OFF_TMIN + 2u];
+    out->seq_len = rd16(&h[MODE_OFF_SEQLEN]);
+    if (out->passes == 0u || out->passes > 4u ||
+        out->seq_len == 0u || out->seq_len > OD_EPD_SEQ_MAX) {
+        printf("[OD] mode %u rejected (passes=%u seq=%u)\r\n",
+               (unsigned)index, (unsigned)out->passes, (unsigned)out->seq_len);
+        return false;
+    }
+    return true;
 }
 
 /* A waveform slot is matched on `sub` (body[1] = lut_slot), NOT on the
@@ -214,35 +247,17 @@ extern "C" int od_epd_desc_from_config(od_panel_desc_t *out, uint8_t display_ins
     }
     memcpy(out->sleep_seq, &body[PANEL_OFF_SLEEPSEQ], OD_EPD_SLEEP_SEQ_MAX);
 
-    /* 0x2E: one per mode. Only the header is pulled in; the 128-byte sequence
-     * stays in flash until a pass actually needs it. */
-    for (int i = 0; i < od_cfg_index_count() && out->mode_count < OD_EPD_MAX_MODES; i++) {
+    /* 0x2E: one per mode. Only INDEXED here -- the header of whichever mode is
+     * selected gets read later by io_mode_read, so a display may declare as
+     * many modes as fit in the config rather than as many as an array held. */
+    for (int i = 0; i < od_cfg_index_count() && out->mode_count < OD_CFG_INDEX_MAX; i++) {
         const od_cfg_entry_t *e = od_cfg_index_entry(i);
-        uint8_t h[MODE_OFF_SEQ];
+        uint8_t inst;
         if (e == NULL || e->type != CONFIG_PKT_DISPLAY_MODE) {
             continue;
         }
-        if (od_cfg_read(e, 0u, h, sizeof(h)) != sizeof(h)) {
+        if (od_cfg_read(e, 0u, &inst, 1u) != 1u || inst != display_instance) {
             continue;
-        }
-        if (h[0] != display_instance) {
-            continue;
-        }
-        od_epd_mode_t *m = &out->modes[out->mode_count];
-        memcpy(m->name, &h[MODE_OFF_NAME], sizeof(m->name));
-        m->name[sizeof(m->name) - 1u] = '\0';
-        m->passes = h[MODE_OFF_PASSES];
-        memcpy(m->lut_slot, &h[MODE_OFF_SLOT], 4);
-        memcpy(m->vsn1, &h[MODE_OFF_VSN1], 4);
-        m->temp_min_c = (int8_t)h[MODE_OFF_TMIN];
-        m->temp_max_c = (int8_t)h[MODE_OFF_TMIN + 1u];
-        m->temp_policy = h[MODE_OFF_TMIN + 2u];
-        m->seq_len = rd16(&h[MODE_OFF_SEQLEN]);
-        if (m->passes == 0u || m->passes > 4u ||
-            m->seq_len == 0u || m->seq_len > OD_EPD_SEQ_MAX) {
-            printf("[OD] desc: mode '%s' rejected (passes=%u seq=%u)\r\n",
-                   m->name, (unsigned)m->passes, (unsigned)m->seq_len);
-            continue;             /* refuse rather than over-read */
         }
         s_mode_entry_idx[out->mode_count] = (uint8_t)i;
         out->mode_count++;
@@ -267,6 +282,7 @@ int OdEpdAdapter::setPanelType(uint8_t display_instance)
     }
     s_io = *od_epd_io_silabs();
     s_io.seq_read = io_seq_read;
+    s_io.mode_read = io_mode_read;
     s_io.lut_info = io_lut_info;
     s_io.lut_read = io_lut_read;
     if (od_epd_init(&_epd, &_desc, &s_io) != 0) {
@@ -299,16 +315,6 @@ void OdEpdAdapter::initIO(uint8_t dc, uint8_t rst, uint8_t busy, uint8_t cs,
                            _desc.busy_idle_level != 0u);
 }
 
-int OdEpdAdapter::selectMode(const char *name)
-{
-    int mi = od_epd_find_mode(&_desc, name);
-    if (mi < 0) {
-        return BBEP_ERROR_BAD_PARAMETER;
-    }
-    return od_epd_select_mode(&_epd, (uint8_t)mi) == 0 ? BBEP_SUCCESS
-                                                       : BBEP_ERROR_BAD_PARAMETER;
-}
-
 int OdEpdAdapter::selectModeIndex(uint8_t index)
 {
     if (!_ready || index >= _desc.mode_count) {
@@ -320,7 +326,7 @@ int OdEpdAdapter::selectModeIndex(uint8_t index)
 
 uint8_t OdEpdAdapter::passCount(void) const
 {
-    return _ready ? _desc.modes[_epd.mode].passes : 0u;
+    return _ready ? _epd.active.passes : 0u;
 }
 
 int OdEpdAdapter::beginPass(uint8_t pass)

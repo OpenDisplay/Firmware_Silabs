@@ -36,6 +36,14 @@
  * reserved bytes, but they will not take a sleep sequence and an older host
  * writes them as zero -- a zeroed code_map is wrong, not merely conservative. */
 #define CONFIG_PKT_DISPLAY_PANEL  0x31
+/* 0x32 carries the ENCODING half of a palette: which per-pass codes produce
+ * each entry. 0x30 carries the measured colour of those entries. They are
+ * separate packets, not one, because a mode may have either without the other
+ * -- an unmeasured panel still needs the encoding to render, and the encoding
+ * is identical across units while the measurements are not (two same-part 2.9"
+ * panels differ by dE00 6.40). Splitting them also keeps 0x30 at the 100 bytes
+ * already stored on configured devices. */
+#define CONFIG_PKT_DISPLAY_PALETTE 0x32
 
 /* Wire sizes of config packets Silabs does not consume itself (touch/buzzer are
  * handled by the main MCU, data_extended is host-only). They must still be
@@ -48,6 +56,7 @@
 #define CONFIG_PKT_DISPLAY_LUT_SIZE    541
 #define CONFIG_PKT_DISPLAY_CALIB_SIZE  100
 #define CONFIG_PKT_DISPLAY_PANEL_SIZE  36
+#define CONFIG_PKT_DISPLAY_PALETTE_SIZE 24
 
 #define GPIO_PIN_UNUSED 0xFF
 

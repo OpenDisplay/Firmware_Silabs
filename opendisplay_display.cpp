@@ -740,21 +740,6 @@ static bool drive_advance_pass(void)
   return true;
 }
 
-static bool panel_begin(const struct DisplayConfig *d, const char *mode, uint8_t pass)
-{
-  if (s_epd.setPanelType(0u) != BBEP_SUCCESS) {
-    printf("[OD] no drive data in config for this display\r\n");
-    return false;
-  }
-  s_epd.setRotation((int)d->rotation * 90);
-  s_epd.initIO(d->dc_pin, d->reset_pin, d->busy_pin, d->cs_pin, d->data_pin, d->clk_pin, 0);
-  if (s_epd.selectMode(mode) != BBEP_SUCCESS) {
-    printf("[OD] config declares no '%s' mode\r\n", mode);
-    return false;
-  }
-  return s_epd.beginPass(pass) == BBEP_SUCCESS;
-}
-
 extern "C" void opendisplay_display_boot_apply(void)
 {
   const struct DisplayConfig *d = display_cfg();
@@ -764,7 +749,10 @@ extern "C" void opendisplay_display_boot_apply(void)
   s_boot_applied = true;
 
   display_power_set(true);
-  if (!panel_begin(d, "full", 0u)) {
+  /* MODE 0 BY CONVENTION. The boot screen always uses the first declared mode,
+   * so the firmware needs no mode names and no notion of which one is "full" --
+   * whatever the config lists first is the plain refresh. */
+  if (!panel_begin_idx(d, 0u, 0u)) {
     display_power_set(false);
     return;
   }
@@ -798,7 +786,7 @@ extern "C" int opendisplay_display_direct_write_start(const uint8_t *payload, ui
   opendisplay_display_abort();
   dw_init_mark("after abort");
   display_power_set(true);
-  if (!panel_begin(d, "full", 0u)) {
+  if (!panel_begin_idx(d, 0u, 0u)) {
     printf("[OD] dw start err no drive data for panel_ic_type=%u\r\n",
            (unsigned)d->panel_ic_type);
     display_power_set(false);
@@ -892,16 +880,7 @@ extern "C" int opendisplay_display_drive_write_start(uint8_t mode, uint8_t refre
   opendisplay_display_abort();
   s_drive_mode = mode;
   s_drive_pass = 0u;
-  s_drive_passes = desc.modes[mode].passes;
-  if (s_drive_passes == 0u) {
-    s_drive_passes = 1u;
-  }
   s_color_scheme = d->color_scheme;
-  s_frame_bytes = opendisplay_color_direct_write_total_bytes(
-      d->pixel_width, d->pixel_height, s_color_scheme);
-  if (passes_out != nullptr) {
-    *passes_out = s_drive_passes;
-  }
   /* refresh is accepted at START (where it can still matter) but the mode
    * already names the waveform, so there is nothing left for it to select on
    * this driver. Logged so a host sending it can see it had no effect. */
@@ -915,11 +894,22 @@ extern "C" int opendisplay_display_drive_write_start(uint8_t mode, uint8_t refre
     display_power_set(false);
     return -OD_ERR_DRIVE_NO_CONFIG;
   }
+  /* Pass count comes from the mode the adapter just loaded, not from a resident
+   * table -- selecting the mode IS how its header gets read. */
+  s_drive_passes = s_epd.passCount();
+  if (s_drive_passes == 0u) {
+    s_drive_passes = 1u;
+  }
+  s_frame_bytes = opendisplay_color_direct_write_total_bytes(
+      d->pixel_width, d->pixel_height, s_color_scheme);
+  s_total_bytes = s_frame_bytes * (uint32_t)s_drive_passes;
+  if (passes_out != nullptr) {
+    *passes_out = s_drive_passes;
+  }
   s_plane_size = opendisplay_color_is_bitplanes(s_color_scheme)
                ? opendisplay_color_bitplane_plane_bytes(d->pixel_width, d->pixel_height)
                : 0u;
   s_plane2_started = false;
-  s_total_bytes = s_frame_bytes * (uint32_t)s_drive_passes;
   s_written_bytes = 0;
   s_dw_chunk_n = 0;
   s_dw_log_pct = 0;
@@ -948,8 +938,8 @@ extern "C" int opendisplay_display_drive_write_start(uint8_t mode, uint8_t refre
       return -OD_ERR_DRIVE_BAD_ARGS;
     }
   }
-  printf("[OD] drive_write mode=%u '%s' passes=%u frame=%lu total=%lu%s\r\n",
-         (unsigned)mode, desc.modes[mode].name, (unsigned)s_drive_passes,
+  printf("[OD] drive_write mode=%u passes=%u frame=%lu total=%lu%s\r\n",
+         (unsigned)mode, (unsigned)s_drive_passes,
          (unsigned long)s_frame_bytes, (unsigned long)s_total_bytes,
          s_dw_compressed ? " zlib" : "");
   return 0;
@@ -1099,7 +1089,8 @@ extern "C" int opendisplay_display_spi_raw_open(bool want_panel_init)
    * short of the frame, so the caller still owns everything after the
    * registers -- which is the point of the raw session. */
   if (want_panel_init) {
-    if (s_epd.selectMode("full") != BBEP_SUCCESS ||
+    /* Mode 0, same convention as the boot screen. */
+    if (s_epd.selectModeIndex(0u) != BBEP_SUCCESS ||
         s_epd.beginPass(0u) != BBEP_SUCCESS) {
       display_power_set(false);
       return -OD_ERR_SPI_RAW_PANEL;

@@ -47,15 +47,11 @@ class OdEpdAdapter {
     void initIO(uint8_t dc, uint8_t rst, uint8_t busy, uint8_t cs,
                 uint8_t mosi, uint8_t sck, uint32_t speed);
 
-    /* Select a drive mode by name ("full", "colour16"). The 16-colour mode is
-     * just a 3-pass mode with waveforms, not a special case. */
-    int  selectMode(const char *name);
-    /* By index. The host names a mode by its position in the config, so the
-     * firmware needs no opinion about what modes are called. */
+    /* Select a drive mode BY INDEX. There is no select-by-name: the firmware
+     * has no opinion about what modes are called, and mode 0 is by convention
+     * the plain full refresh the boot screen uses. */
     int  selectModeIndex(uint8_t index);
     uint8_t modeCount(void) const { return _desc.mode_count; }
-    uint8_t passCountOf(uint8_t index) const {
-        return (index < _desc.mode_count) ? _desc.modes[index].passes : 0u; }
     uint8_t passCount(void) const;
 
     /* Run the pass up to the image marker. Replaces bb_epaper's

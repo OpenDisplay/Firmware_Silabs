@@ -734,6 +734,10 @@ OD_STATIC_ASSERT(sizeof(struct DisplayConfig) == 46, "DisplayConfig wire size");
  * ------------------------------------------------------------------------ */
 #define OD_SEQ_FIELD_BYTES 128u
 #define OD_LUT_FIELD_BYTES 535u
+/* NOT a device limit any more. The firmware reads one mode at a time out of
+ * NVM3, so how many update modes a display may declare is bounded only by how
+ * many 0x2E packets fit in the config (and by OD_CFG_INDEX_MAX entries total).
+ * Kept as the figure hosts size their own arrays by. */
 #define OD_MAX_MODES_PER_DISPLAY 4u
 #define OD_MAX_LUT_SLOTS 2u   /* 16-colour needs 2: colour + edit (shared by
                                * passes 1-2), so 3 passes cost 2 slots. */
@@ -800,6 +804,33 @@ struct DisplayPanelConfig {
     uint8_t  reserved[7];        /**< @reserved @doc "future use; must be 0." */
 } __attribute__((packed));
 OD_STATIC_ASSERT(sizeof(struct DisplayPanelConfig) == 36, "DisplayPanelConfig wire size");
+
+/** @struct DisplayPaletteConfig  @packet 0x32  @repeatable max=8
+ *  @doc "Per-entry ENCODING of a mode's palette: which per-pass codes produce
+ *  each colour. 24 bytes."
+ *
+ * A palette entry is a tuple of 2-bit codes, one per pass -- the 16-colour BWRY
+ * mode sends three frames and a pixel's colour is set by its code in all three.
+ * Nothing else in the config records that mapping, so without this packet a
+ * measured colour cannot be reproduced and a host cannot encode a frame.
+ *
+ * Deliberately separate from 0x30 display_calibration, which holds what those
+ * entries MEASURED as. The encoding is a property of the mode and is identical
+ * across units; the measurements are per-unit (two same-part-number 2.9" panels
+ * differ by dE00 6.40). A mode may legitimately have one without the other.
+ */
+struct DisplayPaletteConfig {
+    uint8_t instance_number; /**< @doc "display instance." */
+    uint8_t mode_index;      /**< @doc "mode these entries belong to." */
+    uint8_t entry_count;     /**< @doc "valid entries in codes[] (<=16)." */
+    uint8_t palette_flags;   /**< @bits DisplayPaletteFlags */
+    uint8_t codes[16];       /**< @doc "per entry, packed 2 bits per pass: pass0 in bits 5-4, pass1 in bits 3-2, pass2 in bits 1-0. Bits 7-6 reserved." */
+    uint8_t reserved[4];     /**< @reserved @doc "future use; must be 0." */
+} __attribute__((packed));
+OD_STATIC_ASSERT(sizeof(struct DisplayPaletteConfig) == 24, "DisplayPaletteConfig wire size");
+
+/* DisplayPaletteConfig.palette_flags @bits DisplayPaletteFlags */
+#define OD_PALETTE_FLAG_ORDERED_BY_L 0x01u /* @doc "entries sorted by measured L*" */
 
 /* DisplayPanelConfig.panel_flags @bits DisplayPanelFlags */
 #define OD_PANEL_FLAG_BUSY_USABLE  (1u << 0) /* @doc "the BUSY line can be polled" */

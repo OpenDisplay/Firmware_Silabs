@@ -58,6 +58,7 @@ static uint16_t body_size(uint8_t type)
         case CONFIG_PKT_DISPLAY_LUT:   return CONFIG_PKT_DISPLAY_LUT_SIZE;
         case CONFIG_PKT_DISPLAY_CALIB: return CONFIG_PKT_DISPLAY_CALIB_SIZE;
         case CONFIG_PKT_DISPLAY_PANEL: return CONFIG_PKT_DISPLAY_PANEL_SIZE;
+        case CONFIG_PKT_DISPLAY_PALETTE: return CONFIG_PKT_DISPLAY_PALETTE_SIZE;
         default:                       return 0u;   /* unknown -> stop */
     }
 }

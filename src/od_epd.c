@@ -218,7 +218,7 @@ static int run_sequence(od_epd_t *e, const uint8_t *hdr, bool have_hdr,
 int od_epd_init(od_epd_t *e, const od_panel_desc_t *d, const od_epd_io_t *io)
 {
     if (!e || !d || !io || !io->cmd || !io->data || !io->reset || !io->delay_ms ||
-        !io->busy_level || !io->seq_read) {
+        !io->busy_level || !io->seq_read || !io->mode_read) {
         return OD_ERR_ARG;
     }
     memset(e, 0, sizeof(*e));
@@ -227,22 +227,12 @@ int od_epd_init(od_epd_t *e, const od_panel_desc_t *d, const od_epd_io_t *io)
     return OD_OK;
 }
 
-int od_epd_find_mode(const od_panel_desc_t *d, const char *name)
-{
-    if (!d || !name) {
-        return OD_ERR_ARG;
-    }
-    for (uint8_t i = 0; i < d->mode_count; i++) {
-        if (strncmp(d->modes[i].name, name, sizeof(d->modes[i].name)) == 0) {
-            return (int)i;
-        }
-    }
-    return OD_ERR_MODE;
-}
-
 int od_epd_select_mode(od_epd_t *e, uint8_t mode)
 {
-    if (!e || mode >= e->desc->mode_count) {
+    if (!e || mode >= e->desc->mode_count || !e->io->mode_read) {
+        return OD_ERR_MODE;
+    }
+    if (!e->io->mode_read(mode, &e->active)) {
         return OD_ERR_MODE;
     }
     e->mode = mode;
@@ -253,7 +243,7 @@ int od_epd_select_mode(od_epd_t *e, uint8_t mode)
 
 int od_epd_begin_pass(od_epd_t *e, uint8_t pass)
 {
-    const od_epd_mode_t *m = &e->desc->modes[e->mode];
+    const od_epd_mode_t *m = &e->active;
     uint8_t  hdr[7];
     bool     have_hdr = false;
     uint16_t lut_len = 0;

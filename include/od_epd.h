@@ -47,7 +47,6 @@
 extern "C" {
 #endif
 
-#define OD_EPD_MAX_MODES        4u
 #define OD_EPD_SEQ_MAX        128u   /* measured: real sequences are 62-101 B */
 #define OD_EPD_MAX_SEQ_STEPS   64u
 #define OD_EPD_LUT_BYTES      535u   /* 7-byte analog header + 528-byte body */
@@ -123,8 +122,13 @@ typedef struct {
     uint32_t busy_fixed_delay_ms;
     uint8_t  sleep_seq[OD_EPD_SLEEP_SEQ_MAX];
     uint8_t  sleep_seq_len;
+    /* How many modes the config declares. NOT an array bound: modes are read
+     * one at a time through io->mode_read, so the count is limited only by how
+     * many 0x2E packets fit in the config. An earlier revision held
+     * modes[OD_EPD_MAX_MODES] resident, which capped a device at four update
+     * modes for no reason other than a fixed array -- and spent RAM on three
+     * modes that were not being driven. */
     uint8_t  mode_count;
-    od_epd_mode_t modes[OD_EPD_MAX_MODES];
 } od_panel_desc_t;
 
 /* Target-provided hardware access plus config-backed reads.
@@ -139,6 +143,9 @@ typedef struct {
     bool (*busy_level)(void);           /* RAW pin level; idle sense is config */
     void (*delay_ms)(uint32_t ms);
     uint16_t (*seq_read)(uint8_t mode, uint16_t off, uint8_t *dst, uint16_t len);
+    /* Load one mode's header. Called when a mode is selected, not at init, so
+     * only the ACTIVE mode is ever resident. */
+    bool     (*mode_read)(uint8_t index, od_epd_mode_t *out);
     bool     (*lut_info)(uint8_t slot, uint16_t *len_out);
     uint16_t (*lut_read)(uint8_t slot, uint16_t off, uint8_t *dst, uint16_t len);
 } od_epd_io_t;
@@ -148,6 +155,7 @@ typedef struct {
     const od_epd_io_t     *io;
     uint8_t                mode;
     uint8_t                pass;
+    od_epd_mode_t          active;   /* the selected mode, read from config */
     /* The active pass's recipe, copied out of NVM3 once per pass. Held because
      * the walk PAUSES at the image marker and resumes after the caller has
      * streamed the frame -- the bytes must outlive that gap. 128 B bounded. */
@@ -159,7 +167,6 @@ typedef struct {
 
 int  od_epd_init(od_epd_t *e, const od_panel_desc_t *d, const od_epd_io_t *io);
 int  od_epd_select_mode(od_epd_t *e, uint8_t mode);
-int  od_epd_find_mode(const od_panel_desc_t *d, const char *name);
 
 /* Run a pass up to the image marker: reset, registers, waveform upload. The
  * caller then streams the frame with od_epd_write_image_chunk and calls
