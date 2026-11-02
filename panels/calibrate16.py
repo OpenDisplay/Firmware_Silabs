@@ -5,10 +5,15 @@ Renders a 4x4 grid of the 16 palette entries through the REAL drive path (the
 mode's own sequence and waveforms, read back out of the serialized config
 packets), photographs it, and reports CIELAB per entry.
 
-WHY THE GRID IS NOT CENTRED. The rig camera sees only the bottom ~65% of this
-panel (see scripts/panel_rect_ODBB1B76.json), so the grid is confined to panel
-rows VIS_TOP..384. A centred grid would put its top row off-frame, which is
-exactly how an earlier attempt measured the backdrop instead of the panel.
+GRID PLACEMENT IS A PROPERTY OF THE CAMERA, NOT THE PANEL. --top 0 (the
+default) fills the whole screen, which is what you want when photographing the
+panel by hand. --top 136 confines the grid to the bottom ~65%, which is all the
+RIG camera can see (scripts/panel_rect_ODBB1B76.json); a full-screen grid shot
+through the rig puts its top row off-frame, which is exactly how an earlier
+attempt measured the backdrop instead of the panel.
+
+Whatever value is used for the render MUST be used for the measurement, or the
+sampling windows land between cells -- hence one flag feeding both.
 
 WHY MEASURE AT ALL. A palette entry is a triple of per-pass 2-bit codes; what
 colour that triple actually produces is a property of the pigment and the
@@ -49,12 +54,12 @@ PALETTE = [(2, 0, 0), (1, 1, 1), (2, 1, 1), (3, 1, 1),
            (2, 1, 3), (2, 3, 1), (3, 1, 2), (0, 2, 1),
            (0, 3, 1), (3, 2, 1), (0, 1, 0), (2, 1, 2)]
 
-VIS_TOP = 136          # first panel row the camera can see
+VIS_TOP = 0            # first panel row the grid occupies; see --top
 GRID = 4
 
 
-def build_pass_frame(w: int, h: int, pass_no: int, _unused=None) -> bytes:
-    """One pass's frame: a 4x4 grid of palette entries in the visible rows.
+def build_pass_frame(w: int, h: int, pass_no: int, top: int | None = None) -> bytes:
+    """One pass's frame: a 4x4 grid of palette entries from row `top` down.
 
     NO code_map IS APPLIED, deliberately. PALETTE holds PANEL 2-bit codes, not
     logical BWRY colours -- show16_raw.py, the renderer these triples came from
@@ -63,16 +68,17 @@ def build_pass_frame(w: int, h: int, pass_no: int, _unused=None) -> bytes:
     a panel code for the 4-colour path; running palette codes through it maps
     2->3 and 3->2, which swaps yellow and red in every pass.
     """
-    cell_h = (h - VIS_TOP) // GRID
+    top = VIS_TOP if top is None else top
+    cell_h = (h - top) // GRID
     cell_w = w // GRID
     out = bytearray()
     acc = n = 0
     for y in range(h):
         for x in range(w):
-            if y < VIS_TOP:
+            if y < top:
                 logical = 1                      # white above the grid
             else:
-                r = min((y - VIS_TOP) // cell_h, GRID - 1)
+                r = min((y - top) // cell_h, GRID - 1)
                 c = min(x // cell_w, GRID - 1)
                 logical = PALETTE[r * GRID + c][pass_no]
             acc = ((acc << 2) | (logical & 3)) & 0xFF
@@ -162,7 +168,7 @@ async def render(link: str, chunk: int, ack_every: int) -> None:
             await raw.close()
 
 
-def measure(dng: str, rect: str) -> list[dict]:
+def measure(dng: str, rect: str, top: int) -> list[dict]:
     import numpy as np
     from bwry_lab import load_raw12, demosaic, linrgb_to_lab
 
@@ -175,16 +181,29 @@ def measure(dng: str, rect: str) -> list[dict]:
     def row_to_y(r: int) -> int:
         return int(round(bottom - (384 - r) * ppr))
 
-    cell_h = (384 - VIS_TOP) // GRID
+    cell_h = (384 - top) // GRID
     cell_w = (x1 - x0) / GRID
     inset_y, inset_x = int(cell_h * ppr * 0.25), cell_w * 0.25
 
     # White reference: the strip between the first visible row and the grid.
     # It is narrow -- the camera sees from panel row ~102 and the grid starts at
     # 136 -- so clamp to the frame rather than assuming headroom above it.
-    wy0 = max(row_to_y(cal["first_visible_panel_row"]) + 8, 4)
-    wy1 = max(row_to_y(VIS_TOP) - 8, wy0 + 20)
-    white = rgb[wy0:wy1, int(x0 + cell_w):int(x1 - cell_w)].reshape(-1, 3).mean(axis=0)
+    # With a full-screen grid there is no white strip above it, so fall back to
+    # the brightest cell (entry 1 is white in this palette) as the reference.
+    if top <= 0:
+        wy0, wy1 = None, None
+    else:
+        wy0 = max(row_to_y(cal["first_visible_panel_row"]) + 8, 4)
+        wy1 = max(row_to_y(top) - 8, wy0 + 20)
+    if wy0 is None:
+        wr, wc = divmod(1, GRID)          # palette entry 1 is white
+        wy0 = row_to_y(top + wr * cell_h) + inset_y
+        wy1 = row_to_y(top + (wr + 1) * cell_h) - inset_y
+        wx0 = int(x0 + wc * cell_w + inset_x)
+        wx1 = int(x0 + (wc + 1) * cell_w - inset_x)
+        white = rgb[wy0:wy1, wx0:wx1].reshape(-1, 3).mean(axis=0)
+    else:
+        white = rgb[wy0:wy1, int(x0 + cell_w):int(x1 - cell_w)].reshape(-1, 3).mean(axis=0)
     if not np.all(np.isfinite(white)) or white.max() <= 0:
         raise SystemExit(f"white reference window y={wy0}..{wy1} is empty; "
                          f"the grid or the calibration rect is wrong")
@@ -194,8 +213,8 @@ def measure(dng: str, rect: str) -> list[dict]:
     out = []
     for i, codes in enumerate(PALETTE):
         r, c = divmod(i, GRID)
-        y0 = row_to_y(VIS_TOP + r * cell_h) + inset_y
-        y1 = row_to_y(VIS_TOP + (r + 1) * cell_h) - inset_y
+        y0 = row_to_y(top + r * cell_h) + inset_y
+        y1 = row_to_y(top + (r + 1) * cell_h) - inset_y
         px0 = int(x0 + c * cell_w + inset_x)
         px1 = int(x0 + (c + 1) * cell_w - inset_x)
         patch = rgb[y0:y1, px0:px1].reshape(-1, 3).mean(axis=0)
@@ -213,16 +232,23 @@ def main() -> int:
                                           / "panel_rect_ODBB1B76.json"))
     ap.add_argument("--dng", help="skip rendering; measure this capture")
     ap.add_argument("--out", default=str(HERE / "palette16_measured.json"))
+    ap.add_argument("--top", type=int, default=0,
+                    help="first panel row the grid occupies. 0 = full screen "
+                         "(hand-held photo); 136 = bottom 65%% (rig camera).")
     ap.add_argument("--chunk", type=int, default=192)
     ap.add_argument("--ack-every", type=int, default=2)
     a = ap.parse_args()
 
+    global VIS_TOP
+    VIS_TOP = a.top
     if not a.dng:
         asyncio.run(render(a.link, a.chunk, a.ack_every))
+        print(f"  grid occupies panel rows {a.top}..384 "
+              f"({'full screen' if a.top == 0 else 'rig-visible area only'})")
         print("rendered; now capture with rig.py and re-run with --dng")
         return 0
 
-    entries = measure(a.dng, a.rect)
+    entries = measure(a.dng, a.rect, a.top)
     print(f"\n{'#':>2}  codes      L*     a*     b*")
     for e in entries:
         L, A, B = e["lab"]
