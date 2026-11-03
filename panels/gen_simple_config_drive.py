@@ -6,9 +6,13 @@ Until now a display preset carried only geometry, so a device configured by the
 toolbox had no drive data at all -- and with bb_epaper removed from the
 firmware, no drive data means no panel.
 
-This writes the 0x31 / 0x2E / 0x2F packets into each display preset that
-panels.yaml describes, in exactly the shape the toolbox's own `extraPackets`
-mechanism already uses: {"pid": "<decimal>", "fields": {...}}.
+This writes the 0xB1 / 0xAE / 0xAF packets into each display preset that
+panels.yaml describes, as {"pid": "<decimal>", "raw": "<body hex>"} entries.
+Since structs 2.2 the drive packets are LENGTH-PREFIXED with variable bodies,
+so the toolbox carries them as OPAQUE blobs and frames them itself
+([seq][id][length:2 LE][body]) -- the schema is never consulted, which also
+retires the whole class of field-type mis-encoding this script used to have
+to assert against (per-pass byte arrays serialized as little-endian ints).
 
 GENERATED, NOT HAND-EDITED. A waveform is 535 bytes, so one preset carries
 1070 characters of hex. Hand-maintaining that is how the yellow/red swap and
@@ -17,13 +21,6 @@ whenever panels.yaml or the waveforms change:
 
     python3 gen_simple_config_drive.py            # writes the presets file
     python3 gen_simple_config_drive.py --check    # CI: fail if stale
-
-FIELD TYPES MATTER HERE. The toolbox serializes a field of size <= 8 with no
-declared type as ONE little-endian integer. lut_slot and vsn1 are size-4
-PER-PASS BYTE ARRAYS, and code_map is a size-4 map, so all three are declared
-`type: bytes` in config.yaml; without that the passes come out reversed and
-pass 0's slot lands on pass 3. That is why this script emits them as hex
-strings and asserts the declared types before writing anything.
 """
 from __future__ import annotations
 
@@ -45,112 +42,40 @@ SCHEMA = TOOLBOX / "config.yaml"
 # itself rather than assumed, so a renamed preset fails loudly.
 PID_FIELD = "panelIcType"
 
-PKT_DISPLAY_MODE = "46"   # 0x2E
-PKT_DISPLAY_LUT = "47"    # 0x2F
-PKT_DISPLAY_PANEL = "49"  # 0x31
+PKT_DISPLAY_MODE = "174"   # 0xAE
+PKT_DISPLAY_LUT = "175"    # 0xAF
+PKT_DISPLAY_PANEL = "177"  # 0xB1
 
 
 def _hex(b: bytes) -> str:
     return b.hex()
 
 
-def check_schema_types() -> None:
-    """Refuse to generate against a schema that would mis-encode the bytes."""
-    import yaml
-
-    doc = yaml.safe_load(SCHEMA.read_text())
-
-    def find(node):
-        if isinstance(node, dict):
-            for k, v in node.items():
-                if isinstance(v, dict) and "fields" in v and "name" in v:
-                    yield str(k), v
-                elif isinstance(v, (dict, list)):
-                    yield from find(v)
-        elif isinstance(node, list):
-            for x in node:
-                yield from find(x)
-
-    packets = dict(find(doc))
-    want = {
-        (PKT_DISPLAY_MODE, "lut_slot"): "bytes",
-        (PKT_DISPLAY_MODE, "vsn1"): "bytes",
-        (PKT_DISPLAY_MODE, "mode_name"): "text",
-        (PKT_DISPLAY_PANEL, "code_map"): "bytes",
-    }
-    for (pid, fname), typ in want.items():
-        if pid not in packets:
-            raise SystemExit(f"config.yaml has no packet {pid}")
-        fld = next((f for f in packets[pid]["fields"] if f["name"] == fname), None)
-        if fld is None:
-            raise SystemExit(f"packet {pid} has no field {fname}")
-        if fld.get("type") != typ:
-            raise SystemExit(
-                f"packet {pid} field {fname} must be `type: {typ}`; it is "
-                f"{fld.get('type')!r}. A size-{fld['size']} field without it is "
-                f"serialized as a little-endian integer, which silently "
-                f"reverses per-pass bytes."
-            )
-
-
 def drive_packets_for(panel_id: int, waves: dict[str, bytes]) -> list[dict]:
-    """-> toolbox preset entries for one panel, built by the SHIPPING encoder."""
+    """-> toolbox preset entries for one panel, built by the SHIPPING encoder.
+
+    packets_from_yaml() emits fully framed length-prefixed packets
+    ([number][id][length:2 LE][body]); the preset carries pid + the BODY hex,
+    and the toolbox re-frames on serialize. Round-tripping through
+    parse_packets() first asserts the blob is self-consistent (CRCs, head
+    sizes) before it is ever shipped to a browser.
+    """
     from opendisplay.panel_drive import packets_from_yaml
 
     raw = packets_from_yaml(HERE / "panels.yaml", panel_id, waves)
     sys.path.insert(0, str(HERE))
     from drive_from_packets import parse_packets
 
-    panel, modes, luts = parse_packets(raw)
+    parse_packets(raw)   # validation only: raises on any inconsistency
 
-    out: list[dict] = [{
-        "pid": PKT_DISPLAY_PANEL,
-        "fields": {
-            "instance_number": "0x0",
-            "panel_flags": hex(
-                (0x01 if panel["busy_usable"] else 0)
-                | (0x02 if panel["lut_supported"] else 0)
-            ),
-            "busy_idle_level": str(panel["busy_idle_level"]),
-            "busy_timeout_ms": str(panel["busy_timeout_ms"]),
-            "busy_fixed_delay_ms": str(panel["busy_fixed_delay_ms"]),
-            "code_map": _hex(bytes(panel["code_map"])),
-            "mode_count": str(panel["mode_count"]),
-            "sleep_seq_len": str(len(panel["sleep_seq"])),
-            "sleep_seq": _hex(panel["sleep_seq"]),
-            "reserved": "0" * 14,
-        },
-    }]
-    for mi, m in sorted(modes.items()):
-        out.append({
-            "pid": PKT_DISPLAY_MODE,
-            "fields": {
-                "instance_number": "0x0",
-                "mode_index": str(mi),
-                "mode_name": m["name"],
-                "passes": str(m["passes"]),
-                "lut_slot": _hex(bytes(m["lut_slot"])),
-                "vsn1": _hex(bytes(m["vsn1"])),
-                "mode_flags": "0x0",
-                "temp_min_c": str(m["temp"][0]),
-                "temp_max_c": str(m["temp"][1]),
-                "temp_policy": str(m["temp"][2]),
-                "seq_len": str(len(m["seq"])),
-                "init_seq": _hex(m["seq"]),
-            },
-        })
-    for slot, data in sorted(luts.items()):
-        from opendisplay.panel_drive import crc16_ccitt
-        out.append({
-            "pid": PKT_DISPLAY_LUT,
-            "fields": {
-                "instance_number": "0x0",
-                "lut_slot": str(slot),
-                "lut_len": str(len(data)),
-                "crc16": hex(crc16_ccitt(data)),
-                "data": _hex(data),
-            },
-        })
+    out: list[dict] = []
+    for p in raw:
+        pid = p[1]
+        body_len = int.from_bytes(p[2:4], "little")
+        body = p[4:]
+        if len(body) != body_len:
+            raise SystemExit(f"packet 0x{pid:02X}: framed length disagrees with body")
+        out.append({"pid": str(pid), "raw": _hex(body)})
     return out
 
 
@@ -163,7 +88,6 @@ def main() -> int:
     import yaml
     from lut_lab.waves import default_waves
 
-    check_schema_types()
     colour, edit = default_waves()
     waves = {"wave_colour": bytes(colour), "wave_edit": bytes(edit)}
 
