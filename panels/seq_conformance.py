@@ -114,6 +114,85 @@ def _data(b: bytes) -> str:
     return "data " + str(len(b)) + "".join(f" {x:02x}" for x in b[:8])
 
 
+def _run_c(seq: bytes, passes: int, slots: list[int], vsn1: list[int],
+           busy: bool, idle: int, timeout: int, fixed: int,
+           lut: bytes | None, extra: list[str]) -> "subprocess.CompletedProcess[str]":
+    with tempfile.TemporaryDirectory() as td:
+        sq = Path(td) / "seq.bin"
+        sq.write_bytes(seq)
+        args = [str(BIN), str(sq), str(passes),
+                ",".join(str(s) for s in slots),
+                ",".join(str(v) for v in vsn1),
+                "1" if busy else "0", str(idle), str(timeout), str(fixed)]
+        if lut is not None:
+            lf = Path(td) / "lut.bin"
+            lf.write_bytes(lut)
+            args.append(str(lf))
+        args += extra
+        return subprocess.run(args, capture_output=True, text=True)
+
+
+def escape_cases(lut: bytes) -> int:
+    """Rev 2 escapes: SET_PIN / IMAGE_SLICE / LUT_SLICE conform between the C
+    executor and the Python model, and the REFUSAL rule holds -- a sequence
+    using an escape the io table does not implement (or a spec-only escape)
+    exits the C harness with rc 5 (OD_EPD_RC_UNSUP) having executed NOTHING."""
+    from opendisplay.panel_drive import encode_sequence
+
+    failures = 0
+
+    # SET_PIN + split image + a LUT streamed register-by-register (UC81xx shape).
+    seq = encode_sequence([
+        "@pin aux1 1",          # BS high (BWRY glass)
+        "04", "@busy",
+        "20", "@lutslice 0 64",     # waveform spread over two registers
+        "21", "@lutslice 64 64",
+        "@pin aux1 z",          # release for a 3-wire read-back window
+        "10",
+        "@slice 0 2",           # dual-controller halves (single CS, cmd|0x80)
+        "A4", "@slice 1 2",
+        "12", "@busy",
+    ])
+    slots = [1] + [0xFF] * 7
+    r = _run_c(seq, 1, slots, [0] * 8, True, 1, 1000, 0, lut, [])
+    c_ops = r.stdout.strip().splitlines()
+    py_ops = python_ops(seq, lut, 1, slots, [0] * 8, True, 0)
+    if r.returncode != 0 or c_ops != py_ops:
+        failures += 1
+        print(f"FAIL escapes: rc={r.returncode} {r.stderr.strip()}")
+        for i, (a, b) in enumerate(zip(c_ops, py_ops)):
+            if a != b:
+                print(f"   first difference at op {i}: C {a!r} vs Python {b!r}")
+                break
+        else:
+            print(f"   length differs: C {len(c_ops)} vs Python {len(py_ops)}")
+    else:
+        print(f"ok   escapes            synth    {len(c_ops):4d} ops identical")
+
+    # Refusals: same sequence without the set_pin capability; spec-only
+    # escapes; a reserved 0x80+ escape. All must exit 5 with NO ops executed
+    # beyond the pass banner (nothing touched the panel).
+    for name, s, extra in (
+        ("set_pin w/o capability", seq, ["--no-set-pin"]),
+        ("cs_select w/o capability",
+         encode_sequence(["@cs 1", "04", "@image", "12"]), ["--no-cs"]),
+        ("read_scratch (spec-only)",
+         bytes([0x00, 0x09, 0x11, 0x08]) + encode_sequence(["04", "@image", "12"]), []),
+        ("write_scratch (spec-only)",
+         bytes([0x00, 0x0A, 0x30, 0x00, 0x02]) + encode_sequence(["04", "@image", "12"]), []),
+        ("reserved 0x80+ escape",
+         bytes([0x00, 0x90, 0x01, 0x00]) + encode_sequence(["04", "@image", "12"]), []),
+    ):
+        r = _run_c(s, 1, [0xFF] * 8, [0] * 8, True, 1, 1000, 0, None, extra)
+        executed = [ln for ln in r.stdout.strip().splitlines() if not ln.startswith("pass")]
+        if r.returncode != 5 or executed:
+            failures += 1
+            print(f"FAIL refuse {name}: rc={r.returncode}, executed {executed[:3]}")
+        else:
+            print(f"ok   refuse             {name}: rc 5, nothing executed")
+    return failures
+
+
 def main() -> int:
     import yaml
     from lut_lab.waves import default_waves
@@ -180,7 +259,9 @@ def main() -> int:
                     extra = (c_ops if len(c_ops) > n else py_ops)[n:]
                     print(f"   trailing: {extra[:5]}")
 
-    print(f"\n{checked - failures}/{checked} mode(s) conformant")
+    failures += escape_cases(waves["wave_colour"])
+
+    print(f"\n{checked - failures}/{checked} mode(s) conformant (+ escape cases)")
     return 1 if failures else 0
 
 
