@@ -40,8 +40,8 @@ pin-level note sent separately).
 | R5 | fixed 541 B LUT packet | **Accepted via R9's sibling proposal.** The length-prefixed packet format (`config-length-prefix-proposal.md`) is **adopted**; `0x2E`–`0x31` are renumbered to `0xAE`–`0xB1` with real-length bodies. **[QUEUED]** — the deployed fleet still runs the fixed packets. §3.1, §5. |
 | R6 | a mode has no colour scheme | **Accepted.** `0xAE display_mode` gains a `color_scheme` byte (`0xFF` = inherit from `0x20`). §3.1. |
 | R7 | 4-pass / 16-entry limits | **Lifted by the length prefix.** `passes ≤ 8`, per-pass arrays sized by `passes`; calibration entries ≤ 32 with 2 code bytes per entry. §3.1. |
-| R8 | device identification command | **Accepted.** `CMD_READ_IDENT = 0x0043`, plaintext, answers from `0x20` config (Silabs) or factory data (Solum, later). **[QUEUED]**. §3.4. |
-| R9 | canonical spec first | **Accepted as a release gate.** `0x2D`, the new packets, `0x0085`, `0x0043` and scheme 10 land in `opendisplay-protocol` (the multi-language canonical repo) *before* anything ships. §8 checklist. |
+| R8 | device identification command | **Accepted.** `CMD_READ_IDENT = 0x0046`, plaintext, answers from `0x20` config (Silabs) or factory data (Solum, later). **[QUEUED]**. §3.4. |
+| R9 | canonical spec first | **Accepted as a release gate.** `0x2D`, the new packets, `0x0085`, `0x0046` and scheme 10 land in `opendisplay-protocol` (the multi-language canonical repo) *before* anything ships. §8 checklist. |
 | R10 | set-pin-level step (BS select, EEPROM CS, 3-wire mode switch) | **Accepted, implement now.** `0x06 [pin_ref] [level]`, where `pin_ref` indexes pins *in the config* (the six spare pin bytes in `0x20` become `aux_pin_1..6` — a rename of reserved bytes, **no size change**), so a `panels.yaml` sequence stays board-independent exactly as requested. §2.3. |
 
 Also changed: the "insert, never append" rule is retired for new packet types (replaced by
@@ -232,22 +232,29 @@ byte is a don't-care that different writers already disagree about.
 | `0xB0` | `display_calibration` | variable | per multi-pass mode | **host only** |
 | `0xB1` | `display_panel` | variable | per display | device + host |
 
-- **`0xAE display_mode`** — `instance`, `mode_index`, `mode_name[12]`,
+*(Layouts below are as **landed** in `opendisplay_structs.h` 2.2: each packet is a fixed
+HEAD struct + one variable tail, so every field keeps a fixed offset and the codegen size
+asserts hold. `lut_slot`/`vsn1` stayed fixed `[8]` arrays rather than `[passes]` — ≤ 14
+bytes of padding buys fixed offsets for every parser.)*
+
+- **`0xAE display_mode`** — 37 B head: `instance`, `mode_index`, `mode_name[12]`,
   **`color_scheme` (new, R6: what this mode renders; `0xFF` = inherit `0x20`'s scheme —
   so BWRY16 lives here and never in `0x20`, and a 16-grey mode on a BWR panel is
   expressible)**, `passes` (≤ 8, was ≤ 4 — R7), `temp_min_c`/`temp_max_c`/`temp_policy`
-  (now device-enforced, §3.3), then `lut_slot[passes]`, `vsn1[passes]`, `seq_len:2`,
-  `seq[seq_len]`. A 1-pass mode with a 60 B sequence costs ~88 B against Rev 1's fixed 159.
-- **`0xAF display_lut`** — `instance`, `lut_slot`, `crc16`, `data[length-4]` — the waveform
-  at its real size (R5). **A slot failing CRC is treated as ABSENT, not as garbage**, so a
-  corrupt waveform degrades to "no custom waveform" rather than driving the panel with noise.
-- **`0xB0 display_calibration`** — `instance`, `mode_index`, `flags` (bit0 measured),
-  `entry_count` (≤ 32, was 16 — R7: 16 greys + red + headroom fits), then per entry
-  `codes:2` (2-bit per-pass codes packed LSB-first — 2 bytes covers 8 passes) + `lab[3]`
-  (CIELAB ×100, int16 LE). **The device skips this packet**; it exists so a host image
-  pipeline can quantise against real measured colour. Encoding and measurement live in *one*
-  packet deliberately: a measurement whose codes are unknown cannot be reproduced, and codes
-  with no measurement cannot be chosen between.
+  (now device-enforced, §3.3), `lut_slot[8]`, `vsn1[8]`, `seq_len:2`; tail `seq[seq_len]`.
+  A 1-pass mode with a 60 B sequence costs ~101 B on the wire against Rev 1's fixed 159.
+- **`0xAF display_lut`** — 4 B head: `instance`, `lut_slot`, `crc16` (CRC16-CCITT,
+  poly/init as the config CRC); tail = the waveform at its real size (R5). **A slot failing
+  CRC is treated as ABSENT, not as garbage**, so a corrupt waveform degrades to "no custom
+  waveform" rather than driving the panel with noise.
+- **`0xB0 display_calibration`** — 4 B head: `instance`, `mode_index`, `cal_flags` (bit0
+  measured), `entry_count` (≤ 32, was 16 — R7: 16 greys + red + headroom fits); tail =
+  `entry_count` × 8 B entries: `codes:u16 LE` (2-bit panel code of pass *p* in bits
+  [2p+1:2p] — 16 bits covers 8 passes) + `lab_l`/`lab_a`/`lab_b` (CIELAB ×100, int16 LE).
+  **The device skips this packet**; it exists so a host image pipeline can quantise against
+  real measured colour. Encoding and measurement live in *one* packet deliberately: a
+  measurement whose codes are unknown cannot be reproduced, and codes with no measurement
+  cannot be chosen between.
 - **`0xB1 display_panel`** — `instance`, `panel_flags`, `busy_idle_level`,
   `busy_timeout_ms:2`, `busy_fixed_delay_ms:2`, `code_map[4]`, `mode_count`,
   `sleep_seq_len`, `sleep_seq[sleep_seq_len]`. This packet exists because BUSY policy, BUSY
@@ -308,14 +315,16 @@ enforces**, because the device is the thing with a sensor.
   No — open question §9.2: whether temperature also belongs in the advertisement (MSD) so
   the host can pick modes without a round-trip. Deliberately not decided this round.
 
-### 3.4 `CMD_READ_IDENT` = `0x0043` (R8) **[QUEUED]**
+### 3.4 `CMD_READ_IDENT` = `0x0046` (R8) **[QUEUED]**
 
 Plaintext (identity is needed precisely when the host does not yet know what it is talking
-to; it carries no secrets).
+to; it carries no secrets). *Numbering note: the review suggested "like `0x0043`", but
+`0x0043` **is** `CMD_FIRMWARE_VERSION`; the next free slot in the plaintext info family,
+`0x0046`, is assigned instead (landed in opendisplay-protocol 2.3).*
 
 ```
-request   [0x00][0x43]
-response  [0x00][0x43][proto_minor:1][fw_target:1][display_count:1]
+request   [0x00][0x46]
+response  [0x00][0x46][proto_minor:1][fw_target:1][display_count:1]
           then per display: [panel_ic_type:2 LE][width:2 LE][height:2 LE][color_scheme:1]
 ```
 
@@ -400,7 +409,7 @@ Observed real configs: 2205–2335 B for one display with two modes (Rev 1 packe
 | `py-opendisplay` | models + byte-exact round-trip for the drive packets; `encoding/multipass.py`. **[QUEUED: `0xAE`–`0xB1` renumber + length-prefix reader]** |
 | `opendisplay.org` | `0x0085` sender, multi-pass encoder, Drive Mode selector, 16-colour dither path. **[QUEUED: same renumber]** |
 | `epaper-dithering` | `ColorScheme::Bwry16 = 10` across the Rust / Python / TypeScript mirrors |
-| `opendisplay-protocol` | **[QUEUED, release gate — R9]** `0x2D`, length-prefix rule, `0xAE`–`0xB1`, `0x0085`, `0x0043`, scheme 10 |
+| `opendisplay-protocol` | **[QUEUED, release gate — R9]** `0x2D`, length-prefix rule, `0xAE`–`0xB1`, `0x0085`, `0x0046`, scheme 10 |
 
 Two host-side rules worth calling out, because both were learned by rendering the wrong thing:
 
@@ -440,7 +449,7 @@ rendered skewed, so an accepted transfer is itself a geometry check.
 **Caveats the reviewers should weigh:**
 
 - All of the above ran the **fixed `0x2E`–`0x31`** packets. The `0xAE`–`0xB1` renumbering,
-  the new escapes, the temperature ACK, and `0x0043` are **agreed but not implemented**, and
+  the new escapes, the temperature ACK, and `0x0046` are **agreed but not implemented**, and
   all five units must be rewritten and re-verified before release.
 - Only **ODBB1B76** has been confirmed *photographically*. The other four are protocol-level
   only — the rig camera is not aimed at them. In this project, protocol-level success has
@@ -491,12 +500,15 @@ those bytes as a length will log a spurious mismatch.
 
 In order:
 
-1. Land the length-prefix rule + `0x2D` + `0xAE`–`0xB1` + `0x0085` (with `temp_c` ACK and
-   errors 06/07) + `0x0043` + scheme 10 in **`opendisplay-protocol`** (R9). The canonical
-   repo generates the multi-language mirrors; nothing ships ahead of it.
+1. ~~Land the length-prefix rule + `0x2D` + `0xAE`–`0xB1` + `0x0085` (with `temp_c` ACK and
+   errors 06/07) + `0x0046 READ_IDENT` + scheme 10 in **`opendisplay-protocol`** (R9).~~
+   **DONE** — opendisplay-protocol commit `40729f3` (protocol 2.3 / structs 2.2), all
+   language mirrors regenerated and `validate_mirrors` green; `CMD_SPI_RAW 0x0084` folded
+   back from the vendored copy in the same change (it had shipped without a canonical home —
+   the exact drift class this repo exists to prevent).
 2. Implement in Firmware_Silabs: `0xA0`-range parser (reader keeps legacy range as-is),
    sequence validation pass (§2.4), escapes `0x06`/`0x07`/`0x0B`, device-side `temp_policy`
-   + ACK fields, `0x0043`.
+   + ACK fields, `0x0046`.
 3. Mirror in `py-opendisplay` (incl. teaching it `0x2D`, closing that hole for good) and the
    web tool; `packets_from_yaml()` emits `0xAE`–`0xB1`.
 4. Rewrite + re-verify all five lab units (one photographed minimum; ideally aim the camera
@@ -519,7 +531,7 @@ In order:
    `temp_c` in the ACK, but a host choosing *content* (e.g. skip red below −5 °C) wants the
    temperature up front. Advertisement (MSD) field, or is ACK-then-adjust-next-time enough in
    practice on the M3 tags?
-3. **`0x0043` field set (R8).** Does `[panel_ic_type][w][h][color_scheme]` per display cover
+3. **`0x0046 READ_IDENT` field set (R8).** Does `[panel_ic_type][w][h][color_scheme]` per display cover
    what the M3 UICR CUSTOMER data can populate (controller, resolution, colours, buttons)?
    Buttons are notably absent — separate concern or same command?
 4. **`pin_ref` coverage (R10).** Six aux pins + the six named SPI pins — enough for every
@@ -592,6 +604,6 @@ In order:
    prefix, so field-set complaints are cheap *now* and expensive later.
 3. **Device-enforced `temp_policy` + ACK reporting** (§3.3) — in particular whether
    "substitute, ties to lowest mode_index" is the right policy-1 semantics.
-4. **The `0x0043` response shape** (§3.4).
+4. **The `0x0046 READ_IDENT` response shape** (§3.4).
 5. **The release checklist order** (§8) — especially gating everything on
    `opendisplay-protocol` landing first.
