@@ -423,20 +423,29 @@ Two host-side rules worth calling out, because both were learned by rendering th
 
 ---
 
-## 6. What was verified on hardware (Rev 1 packets)
+## 6. What was verified on hardware
 
 Every panel `panels.yaml` describes has been migrated and driven through the full
 `0x0085` path. Frame size is `width × height / 4` (2bpp), and the device recomputes it from
 its own config — a geometry mismatch is rejected as `OD_ERR_DRIVE_BAD_SIZE` rather than
 rendered skewed, so an accepted transfer is itself a geometry check.
 
-| Unit | Panel | ic | Config | 16-colour render |
+**Rev 2 re-verification (2026-11-03, `0xAE`–`0xB1` wire, new firmware):** every
+unit OTA'd to the length-prefix build, config rebuilt by
+`panels/migrate_drive_config.py` (burned `0x2E`–`0x31` dropped on read — the
+clearing is implicit in the parser now), 16-colour render driven through
+`0x0085`. The ACK's new `temp_c` is logged per trial.
+
+| Unit | Panel | Rev 2 render | ACK temp | Note |
 |---|---|---|---|---|
-| ODBB1B76 | 2.9" GDEY029F51H | `0x001E` | 2205 B | 48384 B — **photographed**, clean 4×4 grid |
-| ODBF2156 | 2.9" GDEY029F51H | `0x001E` | 2335 B | 48384 B — END + refresh |
-| OD58FFC4 | 2.6" GDEY0266F51 | `0x001C` | 1717 B | 49680 B — END + refresh |
-| ODCF0ED5 | 4.2" GDEM042F52 | `0x003A` | 2205 B | 90000 B — END + refresh |
-| ODBF064E | 7.5" GDEM075F52 | `0x0040` | 2205 B | 288000 B — END + refresh |
+| ODBB1B76 | 2.9" GDEY029F51H | 48384 B, END + `0x73` | 19 °C | read-back byte-verified |
+| ODBF2156 | 2.9" GDEY029F51H | 48384 B, END + `0x73` | — | **findmy 0x2D preserved** through the rewrite |
+| OD58FFC4 | 2.6" GDEY0266F51 | 49680 B, END + `0x73` | 26 °C | read-back byte-verified |
+| ODCF0ED5 | 4.2" GDEM042F52 | 90000 B, END + `0x73` | 27 °C | **photographed in the rig**: clean flat-patch 16-colour grid (index16 pattern) |
+| ODBF064E | 7.5" GDEM075F52 | 288000 B, END + `0x73` | 21 °C | read-back byte-verified |
+
+The photographically confirmed unit this round is **ODCF0ED5** (the 4.2" is
+what sits in the rig today); ODBB1B76's photographic record is from Rev 1.
 
 | Other check | Result |
 |---|---|
@@ -448,13 +457,9 @@ rendered skewed, so an accepted transfer is itself a geometry check.
 
 **Caveats the reviewers should weigh:**
 
-- All of the above ran the **fixed `0x2E`–`0x31`** packets. The `0xAE`–`0xB1` renumbering,
-  the new escapes, the temperature ACK, and `0x0046` are **agreed but not implemented**, and
-  all five units must be rewritten and re-verified before release.
-- Only **ODBB1B76** has been confirmed *photographically*. The other four are protocol-level
-  only — the rig camera is not aimed at them. In this project, protocol-level success has
-  repeatedly reported a working transfer while the panel showed something wrong. Treat the
-  four as "the device accepted and executed three passes", not as "the colours are right".
+- Four of five units are protocol-level this round — the rig camera sees only the 4.2".
+  Protocol-level success has repeatedly reported a working transfer while the panel showed
+  something wrong; treat those four as "the device accepted and executed three passes".
 - Two units additionally carry **unvalidated waveforms**: the 2.6" inherits the 2.9"'s
   `wave_colour`/`wave_edit` (derived entry, see §8.9), and every unit except ODBB1B76 carries
   a borrowed palette (§8.2).
@@ -506,15 +511,22 @@ In order:
    language mirrors regenerated and `validate_mirrors` green; `CMD_SPI_RAW 0x0084` folded
    back from the vendored copy in the same change (it had shipped without a canonical home —
    the exact drift class this repo exists to prevent).
-2. Implement in Firmware_Silabs: `0xA0`-range parser (reader keeps legacy range as-is),
-   sequence validation pass (§2.4), escapes `0x06`/`0x07`/`0x0B`, device-side `temp_policy`
-   + ACK fields, `0x0046`.
-3. Mirror in `py-opendisplay` (incl. teaching it `0x2D`, closing that hole for good) and the
-   web tool; `packets_from_yaml()` emits `0xAE`–`0xB1`.
-4. Rewrite + re-verify all five lab units (one photographed minimum; ideally aim the camera
-   at a second).
-5. `seq_conformance` grows cases for every implemented escape.
-6. Second review round (this document, Rev 2) — including the questions in §9.
+2. ~~Implement in Firmware_Silabs.~~ **DONE** (`de5aded`): length-prefix parser in both
+   walkers, validation pre-scan, escapes `0x06`/`0x07`/`0x0B` executed (`0x08` wired but
+   capability-absent, `0x09`/`0x0A` refused), device-side `temp_policy` with
+   ACK `[mode][passes][temp_c]`, `CMD_READ_IDENT 0x0046` (auth-exempt).
+3. ~~Mirror in `py-opendisplay` + web tool.~~ **DONE** (`5e03709`, `76fde4e`): `0x2D`
+   modelled opaquely, burned ids dropped on read, unknown `0x80+` preserved verbatim;
+   toolbox carries drive packets as raw blobs and frames them itself; presets regenerated.
+4. ~~Rewrite + re-verify all five lab units.~~ **DONE** (`1c2acbb`) — see §6; ODCF0ED5
+   photographed.
+5. ~~`seq_conformance` escape cases.~~ **DONE** (`7a5fee0`): 8/8 modes conformant + the
+   new escapes + five refusal cases (rc distinguishes "refused, nothing executed").
+6. Second review round (this document, Rev 2) — including the questions in §9. **← YOU
+   ARE HERE.** Remaining loose ends: `CMD_SPI_RAW`'s `handle_spi_raw` still predates the
+   canonical fold-back (no change needed, names identical); the toolbox's schema entries
+   for the old fixed drive packets (`config.yaml` pids 46–49) are now dead and can be
+   pruned; Firmware/NRF54/NRF52811 unmigrated as before.
 
 ---
 
