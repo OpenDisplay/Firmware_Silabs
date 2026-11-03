@@ -90,25 +90,52 @@ extern "C" {
  * The register that accepts the waveform is likewise not a field: the sequence
  * contains a plain `[1][0x20]` step immediately before the marker.
  */
-#define OD_SEQ_ESC            0x00u
-#define OD_SEQ_ESC_BUSY       0x01u
-#define OD_SEQ_ESC_WAVE       0x02u
-#define OD_SEQ_ESC_IMAGE      0x03u
-#define OD_SEQ_ESC_LUT        0x04u
-#define OD_SEQ_ESC_DELAY      0x05u
-#define OD_SEQ_END            0x00u
-#define OD_SEQ_WAVE_VCOM      0xFFu
+/* Local executor names (OD_EPD_*): the wire values are canonical in
+ * opendisplay_structs.h's DriveSeqEscape enum; this header stays standalone
+ * (no includes), so it carries its own macros with the same values. The
+ * seq_conformance suite asserts the two sets agree. */
+#define OD_EPD_ESC                 0x00u
+#define OD_EPD_ESC_BUSY            0x01u
+#define OD_EPD_ESC_WAVE            0x02u   /* substitutions (canonical: SUBST) */
+#define OD_EPD_ESC_IMAGE           0x03u
+#define OD_EPD_ESC_LUT             0x04u
+#define OD_EPD_ESC_DELAY           0x05u
+#define OD_EPD_ESC_SET_PIN         0x06u   /* [pin_ref][level 0/1/2=Hi-Z] */
+#define OD_EPD_ESC_IMAGE_SLICE     0x07u   /* [part][of] of the frame */
+#define OD_EPD_ESC_CS_SELECT       0x08u   /* [0=cs, 1=cs_2]; spec-only here */
+#define OD_EPD_ESC_READ_SCRATCH    0x09u   /* unimplemented on every target */
+#define OD_EPD_ESC_WRITE_SCRATCH   0x0Au   /* unimplemented on every target */
+#define OD_EPD_ESC_LUT_SLICE       0x0Bu   /* [off:2 LE][len:2 LE] of the slot */
+#define OD_EPD_SEQ_END             0x00u
+#define OD_EPD_WAVE_VCOM           0xFFu
 
-/* One drive mode. Up to 4 per display. */
+#define OD_EPD_MAX_PASSES          8u
+
+/* Public return codes (negative), so callers can tell "this target does not
+ * implement an escape the sequence uses" (NACK SEQ_UNSUPPORTED on the wire)
+ * from a malformed sequence or a hardware failure. */
+#define OD_EPD_RC_OK          0
+#define OD_EPD_RC_ARG        -1
+#define OD_EPD_RC_MODE       -2
+#define OD_EPD_RC_SEQ        -3
+#define OD_EPD_RC_LUT        -4
+#define OD_EPD_RC_BUSY       -5
+#define OD_EPD_RC_STATE      -6
+#define OD_EPD_RC_UNSUP      -7   /* sequence refused at validation: unknown or
+                                   * unimplemented escape. NOTHING was sent to
+                                   * the panel. */
+
+/* One drive mode. */
 typedef struct {
     char     name[12];
     uint8_t  passes;             /* 1 for normal refresh, 3 for 16-colour */
-    uint8_t  lut_slot[4];        /* per-pass waveform slot, 0xFF = none */
-    uint8_t  vsn1[4];            /* per-pass waveform byte 3 patch, 0 = none */
+    uint8_t  color_scheme;       /* what the mode renders; 0xFF = panel's own */
+    uint8_t  lut_slot[OD_EPD_MAX_PASSES]; /* per-pass waveform slot, 0xFF = none */
+    uint8_t  vsn1[OD_EPD_MAX_PASSES];     /* per-pass waveform byte 3 patch, 0 = none */
     uint16_t seq_len;
-    int8_t   temp_min_c;         /* advisory; host enforces */
+    int8_t   temp_min_c;         /* window enforced by the DEVICE per temp_policy */
     int8_t   temp_max_c;
-    uint8_t  temp_policy;
+    uint8_t  temp_policy;        /* 0 advisory, 1 substitute, 2 reject */
 } od_epd_mode_t;
 
 /* Everything the driver needs about a panel. Populated from config ONLY. */
@@ -148,6 +175,19 @@ typedef struct {
     bool     (*mode_read)(uint8_t index, od_epd_mode_t *out);
     bool     (*lut_info)(uint8_t slot, uint16_t *len_out);
     uint16_t (*lut_read)(uint8_t slot, uint16_t off, uint8_t *dst, uint16_t len);
+    /* OPTIONAL capabilities. NULL means "this target does not implement the
+     * matching escape" -- a sequence using it is then refused at validation
+     * (OD_EPD_RC_UNSUP), BEFORE any panel I/O. This is how one executor serves
+     * targets with different hardware honestly: capability is declared by the
+     * io table, not guessed at runtime.
+     *
+     * set_pin: drive a CONFIG-REFERENCED pin (DriveSeqPinRef, never a GPIO
+     * number) to 0/1, or 2 = release to input/Hi-Z. Returns false if the
+     * reference is unwired on this board. */
+    bool     (*set_pin)(uint8_t pin_ref, uint8_t level);
+    /* cs_select: route subsequent command/data bytes to CS n (0 = cs_pin,
+     * 1 = cs_pin_2). Sticky until changed; a pass starts at 0. */
+    bool     (*cs_select)(uint8_t cs);
 } od_epd_io_t;
 
 typedef struct {
@@ -163,10 +203,23 @@ typedef struct {
     uint16_t               seq_len;
     uint16_t               seq_pos;
     bool                   paused;
+    /* Which image stream the walk is paused on: IMAGE pauses as part 0 of 1;
+     * IMAGE_SLICE pauses with its [part][of] args. The caller sizes the bytes
+     * it streams before resuming as frame_bytes * 1/img_of. */
+    uint8_t                img_part;
+    uint8_t                img_of;
 } od_epd_t;
 
 int  od_epd_init(od_epd_t *e, const od_panel_desc_t *d, const od_epd_io_t *io);
 int  od_epd_select_mode(od_epd_t *e, uint8_t mode);
+
+/* Static pre-scan of a loaded sequence: structure (step bounds, arg counts)
+ * plus CAPABILITY (every escape known AND implemented by this io table).
+ * Returns OD_EPD_RC_OK, OD_EPD_RC_SEQ (malformed) or OD_EPD_RC_UNSUP. Runs
+ * inside od_epd_begin_pass before any panel I/O, so a refused sequence
+ * executes NOTHING -- the wire contract behind OD_ERR_DRIVE_SEQ_UNSUPPORTED.
+ * Public so the conformance suite can exercise it directly. */
+int  od_epd_validate(const od_epd_t *e);
 
 /* Run a pass up to the image marker: reset, registers, waveform upload. The
  * caller then streams the frame with od_epd_write_image_chunk and calls

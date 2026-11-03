@@ -725,6 +725,8 @@ static void handle_drive_write_start(uint8_t connection, const uint8_t *payload,
                                      uint16_t payload_len)
 {
   uint8_t passes = 0u;
+  uint8_t mode_used = 0u;
+  int8_t  temp_c = 0x7F;
   int rc;
 
   /* [mode][refresh][flags][rsv:2] then an optional compressed tail. */
@@ -740,18 +742,58 @@ static void handle_drive_write_start(uint8_t connection, const uint8_t *payload,
     pipe_send(connection, err, sizeof(err));
     return;
   }
+  mode_used = payload[0];
   rc = opendisplay_display_drive_write_start(payload[0], payload[1], payload[2],
                                              payload + 5u,
-                                             (uint16_t)(payload_len - 5u), &passes);
+                                             (uint16_t)(payload_len - 5u), &passes,
+                                             &mode_used, &temp_c);
   if (rc != 0) {
     uint8_t err[] = { RESP_NACK, RESP_DRIVE_WRITE_START, (uint8_t)(-rc), payload[0] };
     pipe_send(connection, err, sizeof(err));
     return;
   }
   {
-    uint8_t ok[] = { RESP_ACK, RESP_DRIVE_WRITE_START, payload[0], passes };
+    /* ACK [mode][passes][temp_c] (protocol 2.3): mode is the one that RUNS --
+     * temp_policy SUBSTITUTE may have swapped it -- and hosts must read it
+     * back rather than assume the request was honoured. */
+    uint8_t ok[] = { RESP_ACK, RESP_DRIVE_WRITE_START, mode_used, passes,
+                     (uint8_t)temp_c };
     pipe_send(connection, ok, sizeof(ok));
   }
+}
+
+/* CMD_READ_IDENT 0x0046 (protocol 2.3): plaintext device identification so a
+ * host can pick the right panel-database entry for a device it has never seen.
+ * Silabs answers from its stored config (0x20). display_count = 0 is a VALID
+ * answer -- reachable device, no display configured (the normal state right
+ * after an OTA onto the config-driven driver). */
+static void handle_read_ident(uint8_t connection)
+{
+  const struct GlobalConfig *cfg = opendisplay_get_global_config();
+  uint8_t rsp[5u + 4u * 7u];
+  uint16_t n = 0u;
+  uint8_t count = 0u;
+
+  rsp[n++] = RESP_ACK;
+  rsp[n++] = RESP_READ_IDENT;
+  rsp[n++] = (uint8_t)OD_PROTOCOL_VERSION_MINOR;
+  rsp[n++] = OD_IDENT_TARGET_SILABS;
+  n++;   /* display_count patched below */
+  if (cfg != NULL) {
+    for (uint8_t i = 0u; i < cfg->display_count && i < 4u; i++) {
+      const struct DisplayConfig *d = &cfg->displays[i];
+      rsp[n++] = (uint8_t)(d->panel_ic_type & 0xFFu);
+      rsp[n++] = (uint8_t)(d->panel_ic_type >> 8);
+      rsp[n++] = (uint8_t)(d->pixel_width & 0xFFu);
+      rsp[n++] = (uint8_t)(d->pixel_width >> 8);
+      rsp[n++] = (uint8_t)(d->pixel_height & 0xFFu);
+      rsp[n++] = (uint8_t)(d->pixel_height >> 8);
+      rsp[n++] = d->color_scheme;
+      count++;
+    }
+  }
+  rsp[4] = count;
+  pipe_send(connection, rsp, n);
 }
 
 static void handle_direct_write_data(uint8_t connection, const uint8_t *payload, uint16_t payload_len)
@@ -1247,6 +1289,14 @@ static void dispatch(uint8_t connection, uint16_t cmd, const uint8_t *payload, u
   if (cmd == CMD_AUTHENTICATE) {
     (void)authenticate_handle(payload, payload_len, auth_rsp, &auth_rsp_len);
     pipe_send(connection, auth_rsp, auth_rsp_len);
+    return;
+  }
+  if (cmd == CMD_READ_IDENT) {
+    /* NEVER auth-gated (protocol 2.3): identity is needed precisely when the
+     * host does not yet know what it is talking to, and the response carries
+     * only what the device advertises about itself anyway (panel type,
+     * geometry, colour scheme) -- no keys, no user data. */
+    handle_read_ident(connection);
     return;
   }
   if (sec_enabled() && !session_alive()) {

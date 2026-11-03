@@ -10,10 +10,15 @@ extern "C" {
 
 /* CMD_DRIVE_WRITE_START 0x85: full-frame write naming a config-declared mode.
  * Multi-pass modes stream every frame in ONE session; *passes_out reports how
- * many the device now expects. Returns 0, or -OD_ERR_DRIVE_*. */
+ * many the device now expects. The DEVICE enforces the mode's temp_policy:
+ * *mode_out is the mode ACTUALLY selected (policy SUBSTITUTE may answer with a
+ * different, temperature-legal mode) and *temp_out the device's temperature
+ * estimate (int8 degC, 0x7F = unknown) -- both go into the ACK verbatim.
+ * Returns 0, or -OD_ERR_DRIVE_*. */
 int opendisplay_display_drive_write_start(uint8_t mode, uint8_t refresh,
                                           uint8_t flags, const uint8_t *payload,
-                                          uint16_t payload_len, uint8_t *passes_out);
+                                          uint16_t payload_len, uint8_t *passes_out,
+                                          uint8_t *mode_out, int8_t *temp_out);
 
 int opendisplay_display_direct_write_start(const uint8_t *payload, uint16_t payload_len);
 int opendisplay_display_direct_write_data(const uint8_t *payload, uint16_t payload_len);

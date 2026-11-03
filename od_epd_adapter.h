@@ -80,11 +80,21 @@ class OdEpdAdapter {
     uint8_t  colourScheme(void) const { return _desc.colour_scheme; }
     bool     ready(void) const  { return _ready; }
 
+    /* The ACTIVE mode's header (temperature window, passes, scheme) -- what
+     * the device-side temp_policy enforcement reads. Valid after a successful
+     * selectModeIndex. */
+    const od_epd_mode_t &activeMode(void) const { return _epd.active; }
+    /* Raw od_epd rc of the last beginPass, so the 0x0085 handler can turn
+     * OD_EPD_RC_UNSUP into OD_ERR_DRIVE_SEQ_UNSUPPORTED instead of the
+     * generic NACK. */
+    int lastRc(void) const { return _last_rc; }
+
  private:
     od_epd_t        _epd;
     od_panel_desc_t _desc;
     bool            _ready = false;
     int             _rotation = 0;
+    int             _last_rc = 0;
 };
 
 #endif /* OD_EPD_ADAPTER_H */

@@ -8,13 +8,14 @@
 
 #include <string.h>
 
-#define OD_OK            0
-#define OD_ERR_ARG      -1
-#define OD_ERR_MODE     -2
-#define OD_ERR_SEQ      -3
-#define OD_ERR_LUT      -4
-#define OD_ERR_BUSY     -5
-#define OD_ERR_STATE    -6
+#define OD_OK           OD_EPD_RC_OK
+#define OD_ERR_ARG      OD_EPD_RC_ARG
+#define OD_ERR_MODE     OD_EPD_RC_MODE
+#define OD_ERR_SEQ      OD_EPD_RC_SEQ
+#define OD_ERR_LUT      OD_EPD_RC_LUT
+#define OD_ERR_BUSY     OD_EPD_RC_BUSY
+#define OD_ERR_STATE    OD_EPD_RC_STATE
+#define OD_ERR_UNSUP    OD_EPD_RC_UNSUP
 
 /* Streaming chunk for the waveform. 64 B of stack against a 535-byte upload:
  * the alternative is a resident 535-byte buffer, which is 1.7% of this part's
@@ -67,10 +68,109 @@ static uint8_t wave_byte(const uint8_t *hdr, bool have_hdr, uint8_t idx)
     if (!have_hdr) {
         return 0u;
     }
-    if (idx == OD_SEQ_WAVE_VCOM) {
+    if (idx == OD_EPD_WAVE_VCOM) {
         return (uint8_t)(hdr[5] ^ 0x80u);
     }
     return (idx < 7u) ? hdr[idx] : 0u;
+}
+
+/* Bytes of escape arguments, -1 for variable (SUBST) or unknown. Shared by the
+ * validator and the runtime walk so the two cannot disagree about framing. */
+static int esc_arg_bytes(uint8_t esc)
+{
+    switch (esc) {
+        case OD_EPD_SEQ_END:
+        case OD_EPD_ESC_BUSY:
+        case OD_EPD_ESC_IMAGE:
+        case OD_EPD_ESC_LUT:           return 0;
+        case OD_EPD_ESC_DELAY:
+        case OD_EPD_ESC_SET_PIN:
+        case OD_EPD_ESC_IMAGE_SLICE:   return 2;
+        case OD_EPD_ESC_CS_SELECT:     return 1;
+        case OD_EPD_ESC_READ_SCRATCH:  return 2;
+        case OD_EPD_ESC_WRITE_SCRATCH: return 3;
+        case OD_EPD_ESC_LUT_SLICE:     return 4;
+        default:                       return -1;
+    }
+}
+
+int od_epd_validate(const od_epd_t *e)
+{
+    const uint8_t *seq;
+    uint16_t len;
+    uint16_t i = 0;
+    uint16_t steps = 0;
+
+    if (e == NULL || e->io == NULL) {
+        return OD_ERR_ARG;
+    }
+    seq = e->seq;
+    len = e->seq_len;
+
+    while (i < len) {
+        if (++steps > OD_EPD_MAX_SEQ_STEPS) {
+            return OD_ERR_SEQ;
+        }
+        uint8_t n = seq[i];
+        if (n != OD_EPD_ESC) {
+            if ((uint32_t)i + 1u + n > len) {
+                return OD_ERR_SEQ;
+            }
+            i += 1u + n;
+            continue;
+        }
+        if (i + 1u >= len) {
+            return OD_ERR_SEQ;
+        }
+        uint8_t esc = seq[i + 1u];
+        if (esc == OD_EPD_SEQ_END) {
+            return OD_OK;
+        }
+        if (esc == OD_EPD_ESC_WAVE) {
+            if (i + 2u >= len) {
+                return OD_ERR_SEQ;
+            }
+            uint8_t cnt = seq[i + 2u];
+            if (cnt == 0u || cnt > 32u ||
+                (uint32_t)i + 3u + (uint32_t)cnt * 2u > len) {
+                return OD_ERR_SEQ;
+            }
+            i += 3u + (uint16_t)cnt * 2u;
+            continue;
+        }
+        int args = esc_arg_bytes(esc);
+        if (args < 0) {
+            /* Unknown escape -- including the reserved 0x80+ length-carrying
+             * range, which this executor does not implement either. Refusing
+             * the WHOLE sequence here (nothing has touched the panel yet) is
+             * the contract behind OD_ERR_DRIVE_SEQ_UNSUPPORTED. */
+            return OD_ERR_UNSUP;
+        }
+        if ((uint32_t)i + 2u + (uint32_t)args > len) {
+            return OD_ERR_SEQ;
+        }
+        /* Known but not implemented by THIS io table. */
+        if ((esc == OD_EPD_ESC_SET_PIN && e->io->set_pin == NULL) ||
+            (esc == OD_EPD_ESC_CS_SELECT && e->io->cs_select == NULL) ||
+            esc == OD_EPD_ESC_READ_SCRATCH ||
+            esc == OD_EPD_ESC_WRITE_SCRATCH) {
+            return OD_ERR_UNSUP;
+        }
+        if (esc == OD_EPD_ESC_IMAGE_SLICE) {
+            uint8_t part = seq[i + 2u];
+            uint8_t of = seq[i + 3u];
+            if (of == 0u || part >= of) {
+                return OD_ERR_SEQ;
+            }
+        }
+        if (esc == OD_EPD_ESC_SET_PIN && seq[i + 3u] > 2u) {
+            return OD_ERR_SEQ;      /* level is 0, 1 or 2 (Hi-Z) */
+        }
+        i += 2u + (uint16_t)args;
+    }
+    /* Running off the end without an END escape is legal -- the runtime walk
+     * treats it as end-of-sequence, so the validator must agree with it. */
+    return OD_OK;
 }
 
 /* Stream the active pass's waveform straight to the panel.
@@ -80,18 +180,22 @@ static uint8_t wave_byte(const uint8_t *hdr, bool have_hdr, uint8_t idx)
  * 16-colour mode's passes 1 and 2 both use the edit waveform but patch byte 3
  * to 0x14 and 0x41 respectively. Storing them pre-patched would cost a second
  * 535-byte copy in the config to hold one differing byte. */
-static int stream_lut(od_epd_t *e, uint8_t slot, uint8_t vsn1, uint16_t len)
+static int stream_lut(od_epd_t *e, uint8_t slot, uint8_t vsn1,
+                      uint16_t start, uint16_t len)
 {
     uint8_t buf[LUT_CHUNK];
-    uint16_t off = 0;
+    uint16_t off = start;
+    uint16_t end = (uint16_t)(start + len);
 
-    while (off < len) {
-        uint16_t want = (uint16_t)((uint16_t)(len - off) < (uint16_t)LUT_CHUNK
-                                 ? (uint16_t)(len - off) : (uint16_t)LUT_CHUNK);
+    while (off < end) {
+        uint16_t want = (uint16_t)((uint16_t)(end - off) < (uint16_t)LUT_CHUNK
+                                 ? (uint16_t)(end - off) : (uint16_t)LUT_CHUNK);
         uint16_t got = e->io->lut_read(slot, off, buf, want);
         if (got != want) {
             return OD_ERR_LUT;
         }
+        /* The vsn1 patch targets ABSOLUTE slot offset 3 -- also when the slot
+         * is streamed in register-sized slices (LUT_SLICE). */
         if (vsn1 != 0u && off <= 3u && (uint16_t)(off + got) > 3u) {
             buf[3u - off] = vsn1;
         }
@@ -129,7 +233,7 @@ static int run_sequence(od_epd_t *e, const uint8_t *hdr, bool have_hdr,
         }
         uint8_t n = seq[i];
 
-        if (n != OD_SEQ_ESC) {
+        if (n != OD_EPD_ESC) {
             /* plain step: [len][cmd][data...] */
             if ((uint32_t)i + 1u + n > len) {
                 return OD_ERR_SEQ;
@@ -148,18 +252,18 @@ static int run_sequence(od_epd_t *e, const uint8_t *hdr, bool have_hdr,
         }
         uint8_t esc = seq[i + 1u];
 
-        if (esc == OD_SEQ_END) {
+        if (esc == OD_EPD_SEQ_END) {
             e->seq_pos = len;
             return OD_OK;
         }
-        if (esc == OD_SEQ_ESC_BUSY) {
+        if (esc == OD_EPD_ESC_BUSY) {
             if (!od_epd_wait_idle(e, e->desc->busy_timeout_ms)) {
                 return OD_ERR_BUSY;
             }
             i += 2u;
             continue;
         }
-        if (esc == OD_SEQ_ESC_DELAY) {
+        if (esc == OD_EPD_ESC_DELAY) {
             if ((uint32_t)i + 4u > len) {
                 return OD_ERR_SEQ;
             }
@@ -167,25 +271,78 @@ static int run_sequence(od_epd_t *e, const uint8_t *hdr, bool have_hdr,
             i += 4u;
             continue;
         }
-        if (esc == OD_SEQ_ESC_IMAGE) {
+        if (esc == OD_EPD_ESC_IMAGE) {
+            e->img_part = 0u;
+            e->img_of = 1u;
             e->seq_pos = (uint16_t)(i + 2u);
             return 1;            /* caller streams the frame, then resumes */
         }
-        if (esc == OD_SEQ_ESC_LUT) {
+        if (esc == OD_EPD_ESC_IMAGE_SLICE) {
+            if ((uint32_t)i + 4u > len) {
+                return OD_ERR_SEQ;
+            }
+            e->img_part = seq[i + 2u];
+            e->img_of = seq[i + 3u];
+            e->seq_pos = (uint16_t)(i + 4u);
+            return 1;            /* caller streams frame_bytes / img_of bytes */
+        }
+        if (esc == OD_EPD_ESC_SET_PIN) {
+            if ((uint32_t)i + 4u > len) {
+                return OD_ERR_SEQ;
+            }
+            if (e->io->set_pin == NULL ||
+                !e->io->set_pin(seq[i + 2u], seq[i + 3u])) {
+                /* Validation keeps a NULL hook from ever landing here; a false
+                 * return means the pin reference is unwired on this board. */
+                return OD_ERR_UNSUP;
+            }
+            i += 4u;
+            continue;
+        }
+        if (esc == OD_EPD_ESC_CS_SELECT) {
+            if ((uint32_t)i + 3u > len) {
+                return OD_ERR_SEQ;
+            }
+            if (e->io->cs_select == NULL || !e->io->cs_select(seq[i + 2u])) {
+                return OD_ERR_UNSUP;
+            }
+            i += 3u;
+            continue;
+        }
+        if (esc == OD_EPD_ESC_LUT) {
             /* Loud, not silent: a mode whose sequence uploads a waveform but
              * whose pass resolved no slot would otherwise refresh with whatever
              * the panel had in its waveform register. */
             if (!have_hdr) {
                 return OD_ERR_LUT;
             }
-            int rc = stream_lut(e, slot, vsn1, lut_len);
+            int rc = stream_lut(e, slot, vsn1, 0u, lut_len);
             if (rc != OD_OK) {
                 return rc;
             }
             i += 2u;
             continue;
         }
-        if (esc == OD_SEQ_ESC_WAVE) {
+        if (esc == OD_EPD_ESC_LUT_SLICE) {
+            if ((uint32_t)i + 6u > len) {
+                return OD_ERR_SEQ;
+            }
+            uint16_t s_off = (uint16_t)(seq[i + 2u] | ((uint16_t)seq[i + 3u] << 8));
+            uint16_t s_len = (uint16_t)(seq[i + 4u] | ((uint16_t)seq[i + 5u] << 8));
+            if (!have_hdr) {
+                return OD_ERR_LUT;
+            }
+            if ((uint32_t)s_off + s_len > lut_len) {
+                return OD_ERR_SEQ;   /* slice runs past the stored slot */
+            }
+            int rc = stream_lut(e, slot, vsn1, s_off, s_len);
+            if (rc != OD_OK) {
+                return rc;
+            }
+            i += 6u;
+            continue;
+        }
+        if (esc == OD_EPD_ESC_WAVE) {
             if (i + 2u >= len) {
                 return OD_ERR_SEQ;
             }
@@ -265,6 +422,16 @@ int od_epd_begin_pass(od_epd_t *e, uint8_t pass)
         return OD_ERR_SEQ;
     }
     e->seq_pos = 0u;
+
+    /* Capability + structure pre-scan BEFORE any panel I/O. A sequence using an
+     * escape this target does not implement is refused wholesale here -- no
+     * reset, no power, nothing half-executed (wire: SEQ_UNSUPPORTED). */
+    {
+        int vrc = od_epd_validate(e);
+        if (vrc != OD_OK) {
+            return vrc;
+        }
+    }
 
     /* Resolve this pass's waveform. Only the 7-byte analog header is read into
      * RAM -- the 528-byte body is streamed later, at the marker. */

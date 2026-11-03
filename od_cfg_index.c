@@ -54,10 +54,13 @@ static uint16_t body_size(uint8_t type)
         case CONFIG_PKT_FLASH:         return 32u;
         case CONFIG_PKT_DATA_EXTENDED: return CONFIG_PKT_DATA_EXTENDED_SIZE;
         case CONFIG_PKT_FINDMY:        return CONFIG_PKT_FINDMY_SIZE;
-        case CONFIG_PKT_DISPLAY_MODE:  return CONFIG_PKT_DISPLAY_MODE_SIZE;
-        case CONFIG_PKT_DISPLAY_LUT:   return CONFIG_PKT_DISPLAY_LUT_SIZE;
-        case CONFIG_PKT_DISPLAY_CALIB: return CONFIG_PKT_DISPLAY_CALIB_SIZE;
-        case CONFIG_PKT_DISPLAY_PANEL: return CONFIG_PKT_DISPLAY_PANEL_SIZE;
+        /* Burned Rev 1 drive-packet ids. The driver no longer consumes them,
+         * but a stale (pre-renumbering) config must walk PAST them rather than
+         * abandon its tail -- 0x2D..0x31 sort after everything else legacy. */
+        case CONFIG_PKT_BURNED_2E:     return CONFIG_PKT_BURNED_2E_SIZE;
+        case CONFIG_PKT_BURNED_2F:     return CONFIG_PKT_BURNED_2F_SIZE;
+        case CONFIG_PKT_BURNED_30:     return CONFIG_PKT_BURNED_30_SIZE;
+        case CONFIG_PKT_BURNED_31:     return CONFIG_PKT_BURNED_31_SIZE;
         default:                       return 0u;   /* unknown -> stop */
     }
 }
@@ -116,37 +119,73 @@ int od_cfg_index_build(void)
      * data" rather than like a bug. */
     uint32_t off = OD_CFG_PREAMBLE_SZ;
     while (off + 2u + 2u <= data_len && s_count < OD_CFG_INDEX_MAX) {
-        uint8_t ph[2];
-        uint8_t b2[2] = { 0u, 0u };
+        uint8_t  ph[4];
+        uint8_t  b2[2] = { 0u, 0u };
+        uint16_t bsz;
+        uint32_t hdr_sz;
+        bool     record = true;
+
         if (!read_blob(off, ph, 2u)) {
             break;
         }
-        uint16_t bsz = body_size(ph[1]);
-        if (bsz == 0u) {
-            /* Documented TLV behaviour is to abandon the tail. Say so: a type
-             * missing from body_size() is indistinguishable from a genuinely
-             * unknown one, and silence here cost a whole debugging session. */
-            printf("[OD] cfg index: unknown packet 0x%02X at %u, "
-                   "abandoning %u B of tail\r\n",
-                   (unsigned)ph[1], (unsigned)off,
-                   (unsigned)(data_len - off));
-            break;
+        if (ph[1] >= 0x80u) {
+            /* LENGTH-PREFIXED range (structs 2.2): [number][id][length:2 LE].
+             * The explicit length is what lets an UNKNOWN id be skipped here
+             * instead of abandoning the tail -- the exact failure the frozen
+             * legacy range kept producing (0x2D, then the burned 0x2E-0x31). */
+            if (off + 4u > data_len - 2u || !read_blob(off, ph, 4u)) {
+                break;
+            }
+            hdr_sz = 4u;
+            bsz = (uint16_t)(ph[2] | ((uint16_t)ph[3] << 8));
+            if (bsz == 0u) {
+                printf("[OD] cfg index: 0x%02X with zero body at %u, skipping\r\n",
+                       (unsigned)ph[1], (unsigned)off);
+            }
+            switch (ph[1]) {
+                case CONFIG_PKT_DISPLAY_MODE:
+                case CONFIG_PKT_DISPLAY_LUT:
+                case CONFIG_PKT_DISPLAY_CALIB:
+                case CONFIG_PKT_DISPLAY_PANEL:
+                    break;
+                default:
+                    /* Unknown but skippable -- that is the whole point. */
+                    printf("[OD] cfg index: skipping unknown 0x%02X (%u B) at %u\r\n",
+                           (unsigned)ph[1], (unsigned)bsz, (unsigned)off);
+                    record = false;
+                    break;
+            }
+        } else {
+            hdr_sz = 2u;
+            bsz = body_size(ph[1]);
+            if (bsz == 0u) {
+                /* Legacy range has no length on the wire: a type missing from
+                 * body_size() abandons the tail, and saying so matters -- the
+                 * silent version of this cost a whole debugging session. */
+                printf("[OD] cfg index: unknown legacy packet 0x%02X at %u, "
+                       "abandoning %u B of tail\r\n",
+                       (unsigned)ph[1], (unsigned)off,
+                       (unsigned)(data_len - off));
+                break;
+            }
         }
-        if (off + 2u + bsz > data_len - 2u) {
+        if (off + hdr_sz + bsz > data_len - 2u) {
             break;      /* body would run past the CRC tail */
         }
-        /* Identity comes from the body: body[0] instance_number, body[1] the
-         * per-type discriminator. See the note in od_cfg_index.h. */
-        if (bsz >= 2u) {
-            (void)read_blob(off + 2u, b2, 2u);
+        if (record && bsz > 0u) {
+            /* Identity comes from the body: body[0] instance_number, body[1]
+             * the per-type discriminator. See the note in od_cfg_index.h. */
+            if (bsz >= 2u) {
+                (void)read_blob(off + hdr_sz, b2, 2u);
+            }
+            s_index[s_count].type     = ph[1];
+            s_index[s_count].instance = b2[0];
+            s_index[s_count].sub      = b2[1];
+            s_index[s_count].offset   = (uint16_t)(off + hdr_sz);
+            s_index[s_count].len      = bsz;
+            s_count++;
         }
-        s_index[s_count].type     = ph[1];
-        s_index[s_count].instance = b2[0];
-        s_index[s_count].sub      = b2[1];
-        s_index[s_count].offset   = (uint16_t)(off + 2u);
-        s_index[s_count].len      = bsz;
-        s_count++;
-        off += 2u + bsz;
+        off += hdr_sz + bsz;
     }
     return (int)s_count;
 }

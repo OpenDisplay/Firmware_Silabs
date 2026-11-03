@@ -86,11 +86,37 @@ bool parseConfigBytes(uint8_t* configData, uint32_t configLen, struct GlobalConf
         uint8_t packetNum = configData[offset];
         uint8_t packetId = configData[offset + 1];
         offset += 2; // Advance past packet header
-        
+
         if (offset > configLen) {
             printf("Offset overflow after header: offset=%u > configLen=%u\r\n", (unsigned)offset, (unsigned)configLen);
             globalConfig->loaded = false;
             return false;
+        }
+
+        /* LENGTH-PREFIXED range (structs 2.2): ids 0x80+ carry [length:2 LE]
+         * after the header, so this walk can skip ANY of them -- including the
+         * drive packets 0xAE-0xB1, which are read on demand out of NVM3 by
+         * od_cfg_index + od_epd_adapter rather than parsed into GlobalConfig
+         * (a resident copy is exactly what that path removed). An unknown
+         * 0x80+ id is skippable BY DESIGN; only an unknown LEGACY id still
+         * abandons the tail (see default:). */
+        if (packetId >= 0x80u) {
+            if (offset + 2 > configLen - 2) {
+                printf("0x%02X: truncated length header\r\n", packetId);
+                globalConfig->loaded = false;
+                return false;
+            }
+            uint16_t exLen = (uint16_t)(configData[offset]
+                                        | ((uint16_t)configData[offset + 1] << 8));
+            offset += 2;
+            if (offset + exLen > configLen - 2) {
+                printf("0x%02X: body %u runs past CRC\r\n", packetId, (unsigned)exLen);
+                globalConfig->loaded = false;
+                return false;
+            }
+            offset += exLen;
+            packetIndex++;
+            continue;
         }
         
         packetIndex++; // Count this packet (before processing, so we count even if we skip it)
@@ -207,29 +233,25 @@ bool parseConfigBytes(uint8_t* configData, uint32_t configLen, struct GlobalConf
                 }
                 break;
                 
-            /* Panel DRIVE data: SKIPPED here on purpose.
-             *
-             * 0x2E/0x2F/0x31 are read on demand straight out of NVM3 by
-             * od_cfg_index + od_epd_adapter, so parsing them into GlobalConfig
-             * would create exactly the second resident copy that was just
-             * removed (1710 bytes for modes + waveforms). The only thing this
-             * walk owes them is an accurate size so later packets still parse.
-             *
-             * 0x30 display_calibration is host-owned and inert on the device. */
-            case CONFIG_PKT_DISPLAY_MODE: // 0x2E
-                offset += CONFIG_PKT_DISPLAY_MODE_SIZE;
+            /* BURNED Rev 1 drive-packet ids (fixed-size drafts of what is now
+             * 0xAE-0xB1). The driver no longer reads them; a stale config must
+             * still walk PAST them by their exact sizes so later packets
+             * parse. The live drive packets are 0x80+ and are skipped by the
+             * generic length-prefix rule above this switch. */
+            case CONFIG_PKT_BURNED_2E:
+                offset += CONFIG_PKT_BURNED_2E_SIZE;
                 break;
 
-            case CONFIG_PKT_DISPLAY_LUT: // 0x2F
-                offset += CONFIG_PKT_DISPLAY_LUT_SIZE;
+            case CONFIG_PKT_BURNED_2F:
+                offset += CONFIG_PKT_BURNED_2F_SIZE;
                 break;
 
-            case CONFIG_PKT_DISPLAY_CALIB: // 0x30
-                offset += CONFIG_PKT_DISPLAY_CALIB_SIZE;
+            case CONFIG_PKT_BURNED_30:
+                offset += CONFIG_PKT_BURNED_30_SIZE;
                 break;
 
-            case CONFIG_PKT_DISPLAY_PANEL: // 0x31
-                offset += CONFIG_PKT_DISPLAY_PANEL_SIZE;
+            case CONFIG_PKT_BURNED_31:
+                offset += CONFIG_PKT_BURNED_31_SIZE;
                 break;
 
             case CONFIG_PKT_LED: // led - parse but don't log

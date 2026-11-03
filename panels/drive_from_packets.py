@@ -39,17 +39,31 @@ sys.path.insert(2, str(HERE.parent / "scripts"))
 
 ESC = 0x00
 ESC_BUSY, ESC_WAVE, ESC_IMAGE, ESC_LUT, ESC_DELAY = 0x01, 0x02, 0x03, 0x04, 0x05
+# structs 2.2 additions (DriveSeqEscape in opendisplay_structs.h)
+ESC_SET_PIN, ESC_IMAGE_SLICE, ESC_CS_SELECT = 0x06, 0x07, 0x08
+ESC_READ_SCRATCH, ESC_WRITE_SCRATCH, ESC_LUT_SLICE = 0x09, 0x0A, 0x0B
 END = 0x00
 
 
 def parse_packets(packets):
-    """-> (panel, modes, luts) decoded straight from the serialized bytes."""
+    """-> (panel, modes, luts) decoded straight from the serialized bytes.
+
+    Drive packets are LENGTH-PREFIXED (0xAE-0xB1, structs 2.2): the wire shape
+    is [number][id][length:2 LE][body], and the waveform length IS the body
+    length minus the 4-byte head -- there is no stored length field to drift.
+    """
     from opendisplay.panel_drive import crc16_ccitt
 
     panel, modes, luts = None, {}, {}
     for p in packets:
-        pid, body = p[1], p[2:]
-        if pid == 0x31:
+        pid = p[1]
+        if pid < 0x80:
+            continue
+        ln = struct.unpack("<H", p[2:4])[0]
+        body = p[4:4 + ln]
+        if len(body) != ln:
+            raise ValueError(f"packet 0x{pid:02X}: body {len(body)} != declared {ln}")
+        if pid == 0xB1:
             inst, flags, idle, timeout, fixed = struct.unpack("<BBBHH", body[0:7])
             sleep_len = body[12]
             panel = {
@@ -63,28 +77,29 @@ def parse_packets(packets):
                 "mode_count": body[11],
                 "sleep_seq": bytes(body[13:13 + sleep_len]),
             }
-        elif pid == 0x2E:
+        elif pid == 0xAE:
             inst, mi = body[0], body[1]
-            seq_len = struct.unpack("<H", body[27:29])[0]
+            seq_len = struct.unpack("<H", body[35:37])[0]
             modes[mi] = {
                 "instance": inst,
                 "name": body[2:14].rstrip(b"\x00").decode(),
-                "passes": body[14],
-                "lut_slot": list(body[15:19]),
-                "vsn1": list(body[19:23]),
-                "temp": struct.unpack("<bb", body[24:26]) + (body[26],),
-                "seq": bytes(body[29:29 + seq_len]),
+                "color_scheme": body[14],
+                "passes": body[15],
+                "temp": struct.unpack("<bb", body[16:18]) + (body[18],),
+                "lut_slot": list(body[19:27]),
+                "vsn1": list(body[27:35]),
+                "seq": bytes(body[37:37 + seq_len]),
             }
-        elif pid == 0x2F:
-            _inst, slot, ln, crc = struct.unpack("<BBHH", body[0:6])
-            luts[slot] = bytes(body[6:6 + ln])
+        elif pid == 0xAF:
+            _inst, slot, crc = struct.unpack("<BBH", body[0:4])
+            luts[slot] = bytes(body[4:])
             if crc16_ccitt(luts[slot]) != crc:
                 raise ValueError(
                     f"LUT slot {slot} CRC mismatch -- the device would treat "
                     f"this as ABSENT, not as a short waveform"
                 )
     if panel is None:
-        raise ValueError("no 0x31 display_panel packet: BUSY policy and the "
+        raise ValueError("no 0xB1 display_panel packet: BUSY policy and the "
                          "colour code map would have nowhere to come from")
     return panel, modes, luts
 
@@ -126,6 +141,24 @@ def walk(seq):
             cnt = seq[i + 2]
             yield ("wave", bytes(seq[i + 3:i + 3 + cnt * 2]), cnt)
             i += 3 + cnt * 2
+        elif esc == ESC_SET_PIN:
+            yield ("setpin", seq[i + 2], seq[i + 3])
+            i += 4
+        elif esc == ESC_IMAGE_SLICE:
+            yield ("image_slice", seq[i + 2], seq[i + 3])
+            i += 4
+        elif esc == ESC_CS_SELECT:
+            yield ("cssel", seq[i + 2])
+            i += 3
+        elif esc == ESC_LUT_SLICE:
+            off = seq[i + 2] | (seq[i + 3] << 8)
+            ln = seq[i + 4] | (seq[i + 5] << 8)
+            yield ("lut_slice", off, ln)
+            i += 6
+        elif esc in (ESC_READ_SCRATCH, ESC_WRITE_SCRATCH):
+            # Specified but unimplemented everywhere; the C executor refuses
+            # the whole sequence at validation, so the model does too.
+            raise ValueError(f"escape 0x{esc:02X} is spec-only (refused)")
         else:
             raise ValueError(f"bad escape 0x{esc:02X}")
 

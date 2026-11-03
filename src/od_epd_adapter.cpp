@@ -18,23 +18,25 @@ extern "C" {
 #include "opendisplay_constants.h"
 }
 
-/* Body offsets inside a 0x2E display_mode packet. These mirror
- * py-opendisplay's DisplayMode.serialize() and are asserted against the wire
- * struct below, so a layout change fails the build rather than the panel. */
+/* Body offsets inside a 0xAE display_mode packet (fixed HEAD + seq tail; the
+ * body length travels in the wire header). These mirror py-opendisplay's
+ * serializer and are asserted against the wire struct below, so a layout
+ * change fails the build rather than the panel. */
 #define MODE_OFF_NAME      2u
-#define MODE_OFF_PASSES   14u
-#define MODE_OFF_SLOT     15u
-#define MODE_OFF_VSN1     19u
-#define MODE_OFF_TMIN     24u
-#define MODE_OFF_SEQLEN   27u
-#define MODE_OFF_SEQ      29u
+#define MODE_OFF_SCHEME   14u
+#define MODE_OFF_PASSES   15u
+#define MODE_OFF_TMIN     16u
+#define MODE_OFF_SLOT     19u
+#define MODE_OFF_VSN1     27u
+#define MODE_OFF_SEQLEN   35u
+#define MODE_OFF_SEQ      37u
 
-/* 0x2F display_lut */
-#define LUT_OFF_LEN        2u
-#define LUT_OFF_CRC        4u
-#define LUT_OFF_DATA       6u
+/* 0xAF display_lut: 4-byte head, then the waveform at its real size. There is
+ * no stored length field any more -- the waveform length IS body_len - 4. */
+#define LUT_OFF_CRC        2u
+#define LUT_OFF_DATA       4u
 
-/* 0x31 display_panel */
+/* 0xB1 display_panel: 13-byte head + sleep_seq[sleep_seq_len] tail. */
 #define PANEL_OFF_FLAGS      1u
 #define PANEL_OFF_IDLE       2u
 #define PANEL_OFF_TIMEOUT    3u
@@ -44,12 +46,29 @@ extern "C" {
 #define PANEL_OFF_SLEEPLEN  12u
 #define PANEL_OFF_SLEEPSEQ  13u
 
-static_assert(offsetof(struct DisplayModeConfig, seq) == MODE_OFF_SEQ,
-              "0x2E sequence offset drifted from the wire struct");
-static_assert(offsetof(struct DisplayLutConfig, data) == LUT_OFF_DATA,
-              "0x2F data offset drifted from the wire struct");
-static_assert(offsetof(struct DisplayPanelConfig, sleep_seq) == PANEL_OFF_SLEEPSEQ,
-              "0x31 sleep_seq offset drifted from the wire struct");
+static_assert(sizeof(struct DisplayModeHead) == MODE_OFF_SEQ,
+              "0xAE head size drifted from the wire struct");
+static_assert(offsetof(struct DisplayModeHead, seq_len) == MODE_OFF_SEQLEN,
+              "0xAE seq_len offset drifted from the wire struct");
+static_assert(offsetof(struct DisplayModeHead, color_scheme) == MODE_OFF_SCHEME,
+              "0xAE color_scheme offset drifted from the wire struct");
+static_assert(sizeof(struct DisplayLutHead) == LUT_OFF_DATA,
+              "0xAF head size drifted from the wire struct");
+static_assert(offsetof(struct DisplayLutHead, crc16) == LUT_OFF_CRC,
+              "0xAF crc offset drifted from the wire struct");
+static_assert(sizeof(struct DisplayPanelHead) == PANEL_OFF_SLEEPSEQ,
+              "0xB1 head size drifted from the wire struct");
+static_assert(sizeof(((od_epd_mode_t *)0)->lut_slot)
+                  == sizeof(((struct DisplayModeHead *)0)->lut_slot),
+              "per-pass slot arrays disagree between executor and wire");
+/* The executor's local escape values must agree with the canonical enum. */
+static_assert(OD_EPD_ESC_SET_PIN == (unsigned)OD_SEQ_ESC_SET_PIN &&
+              OD_EPD_ESC_IMAGE_SLICE == (unsigned)OD_SEQ_ESC_IMAGE_SLICE &&
+              OD_EPD_ESC_CS_SELECT == (unsigned)OD_SEQ_ESC_CS_SELECT &&
+              OD_EPD_ESC_READ_SCRATCH == (unsigned)OD_SEQ_ESC_READ_SCRATCH &&
+              OD_EPD_ESC_WRITE_SCRATCH == (unsigned)OD_SEQ_ESC_WRITE_SCRATCH &&
+              OD_EPD_ESC_LUT_SLICE == (unsigned)OD_SEQ_ESC_LUT_SLICE,
+              "executor escape values drifted from opendisplay_structs.h");
 
 /* The adapter is a singleton in practice (one panel, one SPI bus), and the io
  * vtable takes plain function pointers, so the lookup state lives at file
@@ -90,23 +109,27 @@ static bool io_mode_read(uint8_t index, od_epd_mode_t *out)
         return false;
     }
     const od_cfg_entry_t *e = od_cfg_index_entry((int)s_mode_entry_idx[index]);
-    if (e == NULL || od_cfg_read(e, 0u, h, sizeof(h)) != sizeof(h)) {
+    if (e == NULL || e->len < MODE_OFF_SEQ ||
+        od_cfg_read(e, 0u, h, sizeof(h)) != sizeof(h)) {
         return false;
     }
     memset(out, 0, sizeof(*out));
     memcpy(out->name, &h[MODE_OFF_NAME], sizeof(out->name));
     out->name[sizeof(out->name) - 1u] = '\0';
+    out->color_scheme = h[MODE_OFF_SCHEME];
     out->passes = h[MODE_OFF_PASSES];
-    memcpy(out->lut_slot, &h[MODE_OFF_SLOT], 4);
-    memcpy(out->vsn1, &h[MODE_OFF_VSN1], 4);
+    memcpy(out->lut_slot, &h[MODE_OFF_SLOT], OD_EPD_MAX_PASSES);
+    memcpy(out->vsn1, &h[MODE_OFF_VSN1], OD_EPD_MAX_PASSES);
     out->temp_min_c = (int8_t)h[MODE_OFF_TMIN];
     out->temp_max_c = (int8_t)h[MODE_OFF_TMIN + 1u];
     out->temp_policy = h[MODE_OFF_TMIN + 2u];
     out->seq_len = rd16(&h[MODE_OFF_SEQLEN]);
-    if (out->passes == 0u || out->passes > 4u ||
-        out->seq_len == 0u || out->seq_len > OD_EPD_SEQ_MAX) {
-        printf("[OD] mode %u rejected (passes=%u seq=%u)\r\n",
-               (unsigned)index, (unsigned)out->passes, (unsigned)out->seq_len);
+    if (out->passes == 0u || out->passes > OD_EPD_MAX_PASSES ||
+        out->seq_len == 0u || out->seq_len > OD_EPD_SEQ_MAX ||
+        (uint32_t)MODE_OFF_SEQ + out->seq_len > e->len) {
+        printf("[OD] mode %u rejected (passes=%u seq=%u body=%u)\r\n",
+               (unsigned)index, (unsigned)out->passes, (unsigned)out->seq_len,
+               (unsigned)e->len);
         return false;
     }
     return true;
@@ -145,13 +168,16 @@ static uint16_t io_lut_read(uint8_t slot, uint16_t off, uint8_t *dst, uint16_t l
 static bool io_lut_info(uint8_t slot, uint16_t *len_out)
 {
     const od_cfg_entry_t *e = find_lut(slot);
-    uint8_t hdr[6];
+    uint8_t hdr[LUT_OFF_DATA];
     uint8_t buf[64];
 
-    if (e == NULL || od_cfg_read(e, 0u, hdr, sizeof(hdr)) != sizeof(hdr)) {
+    if (e == NULL || e->len <= LUT_OFF_DATA ||
+        od_cfg_read(e, 0u, hdr, sizeof(hdr)) != sizeof(hdr)) {
         return false;
     }
-    uint16_t len = rd16(&hdr[LUT_OFF_LEN]);
+    /* The waveform length IS the body length minus the 4-byte head -- 0xAF
+     * carries the waveform at its real size, no stored length to disagree. */
+    uint16_t len = (uint16_t)(e->len - LUT_OFF_DATA);
     uint16_t want_crc = rd16(&hdr[LUT_OFF_CRC]);
     if (len == 0u || len > OD_EPD_LUT_BYTES) {
         return false;
@@ -186,6 +212,38 @@ static bool io_lut_info(uint8_t slot, uint16_t *len_out)
     return true;
 }
 
+/* ------------------------------------------------- SET_PIN escape backing */
+
+/* pin_ref -> raw (port<<4|pin) byte, resolved from DisplayConfig 0x20 when the
+ * panel descriptor is loaded. Sequences reference pins SYMBOLICALLY
+ * (DriveSeqPinRef) so panels.yaml stays board-independent; this table is the
+ * one place the symbol meets the wiring. */
+#define PINREF_AUX_COUNT 6u
+static uint8_t s_aux_pins[PINREF_AUX_COUNT];
+static uint8_t s_named_pins[6];   /* RESET, DC, CS, CS_2, DATA, CLK */
+
+static bool io_set_pin(uint8_t pin_ref, uint8_t level)
+{
+    uint8_t raw = 0xFFu;
+
+    if (pin_ref < PINREF_AUX_COUNT) {
+        raw = s_aux_pins[pin_ref];
+        /* Aux pins: 0x00 AND 0xFF mean "not wired" -- legacy configs carry 0
+         * in these ex-reserved bytes, so 0 cannot mean port A pin 0 here. */
+        if (raw == 0x00u) {
+            raw = 0xFFu;
+        }
+    } else if (pin_ref >= OD_SEQ_PINREF_RESET && pin_ref <= OD_SEQ_PINREF_CLK) {
+        raw = s_named_pins[pin_ref - OD_SEQ_PINREF_RESET];
+    }
+    if (raw == 0xFFu) {
+        printf("[OD] SET_PIN ref 0x%02X unwired on this board\r\n",
+               (unsigned)pin_ref);
+        return false;
+    }
+    return od_epd_io_silabs_pin(raw, level);
+}
+
 /* ------------------------------------------------------ desc from config */
 
 extern "C" uint8_t od_epd_desc_diag(void) { return s_desc_diag; }
@@ -201,7 +259,8 @@ static int desc_fail(int rc)
 extern "C" int od_epd_desc_from_config(od_panel_desc_t *out, uint8_t display_instance)
 {
     const struct GlobalConfig *cfg = opendisplay_get_global_config();
-    uint8_t body[CONFIG_PKT_DISPLAY_PANEL_SIZE];
+    uint8_t body[PANEL_OFF_SLEEPSEQ + OD_EPD_SLEEP_SEQ_MAX];
+    uint16_t got;
 
     if (out == NULL || cfg == NULL || cfg->display_count == 0u) {
         return desc_fail(-1);
@@ -231,8 +290,14 @@ extern "C" int od_epd_desc_from_config(od_panel_desc_t *out, uint8_t display_ins
             break;
         }
     }
-    if (pe == NULL || od_cfg_read(pe, 0u, body, sizeof(body)) != sizeof(body)) {
-        printf("[OD] desc: display %u has no 0x31 panel packet\r\n",
+    /* Variable body: 13-byte head + sleep_seq tail. Read what is there, up to
+     * the head + the biggest sleep sequence the executor holds. */
+    memset(body, 0, sizeof(body));
+    got = (uint16_t)((pe != NULL && pe->len < sizeof(body)) ? pe->len
+                                                            : sizeof(body));
+    if (pe == NULL || pe->len < PANEL_OFF_SLEEPSEQ ||
+        od_cfg_read(pe, 0u, body, got) != got) {
+        printf("[OD] desc: display %u has no display_panel (0xB1) packet\r\n",
                (unsigned)display_instance);
         return desc_fail(-3);
     }
@@ -242,7 +307,8 @@ extern "C" int od_epd_desc_from_config(od_panel_desc_t *out, uint8_t display_ins
     out->busy_fixed_delay_ms = rd16(&body[PANEL_OFF_FIXED]);
     memcpy(out->code_map, &body[PANEL_OFF_CODEMAP], 4);
     out->sleep_seq_len = body[PANEL_OFF_SLEEPLEN];
-    if (out->sleep_seq_len > OD_EPD_SLEEP_SEQ_MAX) {
+    if (out->sleep_seq_len > OD_EPD_SLEEP_SEQ_MAX ||
+        (uint32_t)PANEL_OFF_SLEEPSEQ + out->sleep_seq_len > got) {
         out->sleep_seq_len = 0u;
     }
     memcpy(out->sleep_seq, &body[PANEL_OFF_SLEEPSEQ], OD_EPD_SLEEP_SEQ_MAX);
@@ -280,11 +346,31 @@ int OdEpdAdapter::setPanelType(uint8_t display_instance)
     if (od_epd_desc_from_config(&_desc, display_instance) != 0) {
         return BBEP_ERROR_BAD_PARAMETER;
     }
+    /* Resolve the SET_PIN symbol table from 0x20 while it is at hand. */
+    {
+        const struct GlobalConfig *cfg = opendisplay_get_global_config();
+        const struct DisplayConfig *d = &cfg->displays[0];
+        s_aux_pins[0] = d->aux_pin_1;
+        s_aux_pins[1] = d->aux_pin_2;
+        s_aux_pins[2] = d->aux_pin_3;
+        s_aux_pins[3] = d->aux_pin_4;
+        s_aux_pins[4] = d->aux_pin_5;
+        s_aux_pins[5] = d->aux_pin_6;
+        s_named_pins[0] = d->reset_pin;
+        s_named_pins[1] = d->dc_pin;
+        s_named_pins[2] = d->cs_pin;
+        s_named_pins[3] = d->cs_pin_2;
+        s_named_pins[4] = d->data_pin;
+        s_named_pins[5] = d->clk_pin;
+    }
     s_io = *od_epd_io_silabs();
     s_io.seq_read = io_seq_read;
     s_io.mode_read = io_mode_read;
     s_io.lut_info = io_lut_info;
     s_io.lut_read = io_lut_read;
+    s_io.set_pin = io_set_pin;
+    s_io.cs_select = NULL;   /* dual-CS: specified, not implemented here yet --
+                              * a sequence using it is refused at validation. */
     if (od_epd_init(&_epd, &_desc, &s_io) != 0) {
         return BBEP_ERROR_BAD_PARAMETER;
     }
@@ -332,11 +418,14 @@ uint8_t OdEpdAdapter::passCount(void) const
 int OdEpdAdapter::beginPass(uint8_t pass)
 {
     if (!_ready) {
+        _last_rc = OD_EPD_RC_STATE;
         return BBEP_ERROR_BAD_PARAMETER;
     }
-    int rc = od_epd_begin_pass(&_epd, pass);
-    if (rc != 0) {
-        printf("[OD] beginPass %u failed rc=%d\r\n", (unsigned)pass, rc);
+    _last_rc = od_epd_begin_pass(&_epd, pass);
+    if (_last_rc != 0) {
+        printf("[OD] beginPass %u failed rc=%d%s\r\n", (unsigned)pass, _last_rc,
+               _last_rc == OD_EPD_RC_UNSUP ? " (sequence refused: unsupported escape)"
+                                           : "");
         return BBEP_ERROR_BAD_PARAMETER;
     }
     return BBEP_SUCCESS;

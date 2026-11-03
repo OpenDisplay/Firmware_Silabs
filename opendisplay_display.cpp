@@ -7,6 +7,7 @@
 #include "opendisplay_runtime.h"
 #include "od_epd_adapter.h"
 #include "em_cmu.h"
+#include "em_emu.h"   /* EMU_TemperatureGet: temp_policy enforcement (0x0085) */
 #include "em_gpio.h"
 #include "em_system.h"
 #include "qr/qrcode.h"
@@ -885,6 +886,28 @@ extern "C" int opendisplay_display_direct_write_start(const uint8_t *payload, ui
   return 0;
 }
 
+/* Device temperature for temp_policy enforcement and the 0x0085 ACK. The EFR32
+ * die sensor stands in for the panel: at e-paper update cadence the two are at
+ * equilibrium, and a 1-2 degC offset is far inside the mode windows' margins. */
+static int8_t drive_temp_c(void)
+{
+  float t = EMU_TemperatureGet();
+  if (t < -128.0f || t > 126.0f) {
+    return (int8_t)0x7F;   /* unknown / absurd reading */
+  }
+  return (int8_t)(t + (t >= 0.0f ? 0.5f : -0.5f));
+}
+
+static bool mode_temp_ok(const od_epd_mode_t &m, int8_t t)
+{
+  /* min == max == 0 means "no window declared" (the zero-filled default of
+   * every config written before temperature enforcement existed). */
+  if (m.temp_min_c == 0 && m.temp_max_c == 0) {
+    return true;
+  }
+  return t >= m.temp_min_c && t <= m.temp_max_c;
+}
+
 /* CMD_DRIVE_WRITE_START 0x85. Selects a config-declared mode, then reuses the
  * direct-write data path verbatim -- the only difference from 0x70 is that the
  * device knows the mode (and therefore the pass count and total size) up front. */
@@ -892,10 +915,13 @@ extern "C" int opendisplay_display_drive_write_start(uint8_t mode, uint8_t refre
                                                      uint8_t flags,
                                                      const uint8_t *payload,
                                                      uint16_t payload_len,
-                                                     uint8_t *passes_out)
+                                                     uint8_t *passes_out,
+                                                     uint8_t *mode_out,
+                                                     int8_t *temp_out)
 {
   const struct DisplayConfig *d = display_cfg();
   od_panel_desc_t desc;
+  int8_t temp_c;
 
   if (d == nullptr) {
     return -OD_ERR_DRIVE_NO_CONFIG;
@@ -912,7 +938,6 @@ extern "C" int opendisplay_display_drive_write_start(uint8_t mode, uint8_t refre
   }
 
   opendisplay_display_abort();
-  s_drive_mode = mode;
   s_drive_pass = 0u;
   s_color_scheme = d->color_scheme;
   /* refresh is accepted at START (where it can still matter) but the mode
@@ -923,10 +948,63 @@ extern "C" int opendisplay_display_drive_write_start(uint8_t mode, uint8_t refre
            (unsigned)refresh);
   }
 
+  temp_c = drive_temp_c();
+  if (temp_out != nullptr) {
+    *temp_out = temp_c;
+  }
+
   display_power_set(true);
-  if (!panel_begin_idx(d, mode, 0u)) {
+  /* panel_begin_idx inlined here because temp_policy enforcement has to sit
+   * BETWEEN mode selection (which loads the window) and beginPass (which
+   * powers the glass): under policy SUBSTITUTE the mode that runs may not be
+   * the mode that was asked for, and the ACK reports the one that ran. */
+  if (s_epd.setPanelType(0u) != BBEP_SUCCESS) {
     display_power_set(false);
     return -OD_ERR_DRIVE_NO_CONFIG;
+  }
+  s_epd.setRotation((int)d->rotation * 90);
+  s_epd.initIO(d->dc_pin, d->reset_pin, d->busy_pin, d->cs_pin, d->data_pin,
+               d->clk_pin, 0);
+  if (s_epd.selectModeIndex(mode) != BBEP_SUCCESS) {
+    display_power_set(false);
+    return -OD_ERR_DRIVE_BAD_MODE;
+  }
+  if (temp_c != (int8_t)0x7F && !mode_temp_ok(s_epd.activeMode(), temp_c)) {
+    uint8_t policy = s_epd.activeMode().temp_policy;
+    if (policy == OD_DRIVE_TEMP_REJECT) {
+      printf("[OD] drive_write mode %u rejected at %d C (window %d..%d)\r\n",
+             (unsigned)mode, (int)temp_c,
+             (int)s_epd.activeMode().temp_min_c,
+             (int)s_epd.activeMode().temp_max_c);
+      display_power_set(false);
+      return -OD_ERR_DRIVE_TEMP_RANGE;
+    }
+    if (policy == OD_DRIVE_TEMP_SUBSTITUTE) {
+      uint8_t i;
+      for (i = 0u; i < desc.mode_count; i++) {
+        if (s_epd.selectModeIndex(i) == BBEP_SUCCESS &&
+            mode_temp_ok(s_epd.activeMode(), temp_c)) {
+          break;
+        }
+      }
+      if (i >= desc.mode_count) {
+        display_power_set(false);
+        return -OD_ERR_DRIVE_TEMP_RANGE;   /* nothing declared covers temp_c */
+      }
+      printf("[OD] drive_write temp %d C: mode %u substituted for %u\r\n",
+             (int)temp_c, (unsigned)i, (unsigned)mode);
+      mode = i;
+    }
+    /* OD_DRIVE_TEMP_ADVISORY: run as asked; the window is documentation. */
+  }
+  s_drive_mode = mode;
+  if (mode_out != nullptr) {
+    *mode_out = mode;
+  }
+  if (s_epd.beginPass(0u) != BBEP_SUCCESS) {
+    display_power_set(false);
+    return (s_epd.lastRc() == OD_EPD_RC_UNSUP) ? -OD_ERR_DRIVE_SEQ_UNSUPPORTED
+                                               : -OD_ERR_DRIVE_NO_CONFIG;
   }
   /* Pass count comes from the mode the adapter just loaded, not from a resident
    * table -- selecting the mode IS how its header gets read. */

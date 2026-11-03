@@ -23,19 +23,26 @@
 #define CONFIG_PKT_FLASH          0x2B
 #define CONFIG_PKT_DATA_EXTENDED  0x2C
 #define CONFIG_PKT_FINDMY         0x2D
-/* Panel drive data, minor 1.6. Appended at the END of the id space: shipped
- * firmware abandons the blob tail at the first unknown id, so these must sit
- * behind every packet an older device understands. */
-#define CONFIG_PKT_DISPLAY_MODE   0x2E
-#define CONFIG_PKT_DISPLAY_LUT    0x2F
-#define CONFIG_PKT_DISPLAY_CALIB  0x30
-/* 0x31 carries the per-panel drive properties that 0x20 never had: whether the
- * BUSY line can be trusted, which level means idle, the logical-to-panel colour
- * code map, and the sleep sequence. Without it a driver still needs a built-in
- * per-panel table, which is the thing this change exists to delete. 0x20 has 13
- * reserved bytes, but they will not take a sleep sequence and an older host
- * writes them as zero -- a zeroed code_map is wrong, not merely conservative. */
-#define CONFIG_PKT_DISPLAY_PANEL  0x31
+/* Panel drive data, structs 2.2. These live in the LENGTH-PREFIXED id range:
+ * on the wire each is [number][id][length:2 LE][body] (SinglePacketHeaderEx),
+ * so a reader skips an unknown 0x80+ id by length instead of abandoning the
+ * tail. The legacy range 0x00-0x7F is FROZEN; 0x2D findmy_config is its last
+ * id. The panel packet carries the per-panel drive properties that 0x20 never
+ * had: whether the BUSY line can be trusted, which level means idle, the
+ * logical-to-panel colour code map, and the sleep sequence. Without it a
+ * driver still needs a built-in per-panel table, which this change deletes. */
+#define CONFIG_PKT_DISPLAY_MODE   0xAE
+#define CONFIG_PKT_DISPLAY_LUT    0xAF
+#define CONFIG_PKT_DISPLAY_CALIB  0xB0
+#define CONFIG_PKT_DISPLAY_PANEL  0xB1
+/* Ids 0x2E-0x31 were burned by pre-release lab builds carrying FIXED-SIZE
+ * drafts of the same packets. RESERVED, never reuse; the index walker keeps
+ * their sizes so a stale config walks PAST them instead of abandoning its
+ * tail (the driver no longer consumes them). */
+#define CONFIG_PKT_BURNED_2E      0x2E
+#define CONFIG_PKT_BURNED_2F      0x2F
+#define CONFIG_PKT_BURNED_30      0x30
+#define CONFIG_PKT_BURNED_31      0x31
 
 /* Wire sizes of config packets Silabs does not consume itself (touch/buzzer are
  * handled by the main MCU, data_extended is host-only). They must still be
@@ -44,15 +51,17 @@
 #define CONFIG_PKT_BUZZER_SIZE         32
 #define CONFIG_PKT_DATA_EXTENDED_SIZE  288
 #define CONFIG_PKT_FINDMY_SIZE         128
-#define CONFIG_PKT_DISPLAY_MODE_SIZE   157
-#define CONFIG_PKT_DISPLAY_LUT_SIZE    541
-/* 116, not 100: 0x30 carries the palette ENCODING (which per-pass codes make
- * each entry) alongside the measured CIELAB. They live in one packet so the
- * two halves cannot disagree about entry count or order -- a measurement
- * whose codes are unknown cannot be reproduced, and codes with no
- * measurement cannot be chosen between. */
-#define CONFIG_PKT_DISPLAY_CALIB_SIZE  116
-#define CONFIG_PKT_DISPLAY_PANEL_SIZE  36
+#define CONFIG_PKT_BURNED_2E_SIZE      157
+#define CONFIG_PKT_BURNED_2F_SIZE      541
+#define CONFIG_PKT_BURNED_30_SIZE      116
+#define CONFIG_PKT_BURNED_31_SIZE      36
+/* Fixed HEAD sizes of the variable-body drive packets (the tails are seq[],
+ * lut data[], calibration entries[] and sleep_seq[]; total body length comes
+ * from the wire header). Asserted against the structs in od_epd_adapter. */
+#define CONFIG_PKT_DISPLAY_MODE_HEAD   37
+#define CONFIG_PKT_DISPLAY_LUT_HEAD    4
+#define CONFIG_PKT_DISPLAY_CALIB_HEAD  4
+#define CONFIG_PKT_DISPLAY_PANEL_HEAD  13
 
 #define GPIO_PIN_UNUSED 0xFF
 

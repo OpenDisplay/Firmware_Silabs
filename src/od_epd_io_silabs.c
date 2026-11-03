@@ -275,6 +275,24 @@ void od_epd_io_silabs_setup(uint8_t dc, uint8_t rst, uint8_t busy, uint8_t cs,
     hw_spi_init();
 }
 
+bool od_epd_io_silabs_pin(uint8_t raw_pin, uint8_t level)
+{
+    GPIO_Port_TypeDef port;
+    uint8_t pin;
+
+    if (!decode(raw_pin, &port, &pin) || level > 2u) {
+        return false;
+    }
+    if (level == 2u) {
+        /* Release to input/Hi-Z -- a bidirectional data line being handed to
+         * the panel for a read-back must actually stop driving, not idle high. */
+        GPIO_PinModeSet(port, pin, gpioModeInput, 0u);
+    } else {
+        GPIO_PinModeSet(port, pin, gpioModePushPull, level);
+    }
+    return true;
+}
+
 const od_epd_io_t *od_epd_io_silabs(void)
 {
     static const od_epd_io_t io = {
@@ -285,10 +303,13 @@ const od_epd_io_t *od_epd_io_silabs(void)
         .delay_ms = io_delay_ms,
         /* The config-backed reads are filled in by the adapter: they are not a
          * property of this chip, they are a property of where the config is
-         * stored. */
+         * stored. Same for set_pin -- the pin_ref SYMBOL table lives in the
+         * config, so the adapter resolves it and calls od_epd_io_silabs_pin. */
         .seq_read = NULL,
         .lut_info = NULL,
         .lut_read = NULL,
+        .set_pin = NULL,
+        .cs_select = NULL,
     };
     return &io;
 }

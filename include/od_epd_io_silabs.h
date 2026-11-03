@@ -23,6 +23,12 @@ void od_epd_io_silabs_setup(uint8_t dc, uint8_t rst, uint8_t busy, uint8_t cs,
  * are supplied by whoever knows where the config lives. */
 const od_epd_io_t *od_epd_io_silabs(void);
 
+/* Drive one RAW (port<<4|pin encoded) GPIO for the SET_PIN sequence escape:
+ * level 0/1 = push-pull low/high, 2 = release to input/Hi-Z (a bidirectional
+ * data line during a 3-wire read-back). Returns false on an invalid encoding.
+ * The pin_ref -> raw mapping lives in the adapter (it owns the config). */
+bool od_epd_io_silabs_pin(uint8_t raw_pin, uint8_t level);
+
 #ifdef __cplusplus
 }
 #endif

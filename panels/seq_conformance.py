@@ -88,8 +88,23 @@ def python_ops(seq: bytes, lut: bytes | None, passes: int,
                 assert this_lut is not None
                 for i in range(0, len(this_lut), 64):
                     out.append(_data(this_lut[i:i + 64]))
+            elif op[0] == "lut_slice":
+                assert this_lut is not None
+                off, ln = op[1], op[2]
+                sl = this_lut[off:off + ln]
+                assert len(sl) == ln, "slice runs past the stored slot"
+                # The C streams the slice in 64-byte lut_read chunks.
+                for i in range(0, len(sl), 64):
+                    out.append(_data(sl[i:i + 64]))
+            elif op[0] == "setpin":
+                out.append(f"setpin {op[1]:02x} {op[2]}")
+            elif op[0] == "cssel":
+                out.append(f"cssel {op[1]}")
             elif op[0] == "image":
-                out.append("IMAGE")
+                out.append("IMAGE part 0 of 1")
+                paused = True
+            elif op[0] == "image_slice":
+                out.append(f"IMAGE part {op[1]} of {op[2]}")
                 paused = True
         assert paused, "sequence never reached an image marker"
     return out
