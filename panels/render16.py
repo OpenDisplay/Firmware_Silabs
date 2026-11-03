@@ -127,7 +127,19 @@ async def run(a) -> int:
             print(f"START rejected: {r.hex(' ')} ({err})")
             return 1
         passes = r[3] if len(r) > 3 else 0
-        print(f"START ok: device expects {passes} passes")
+        # Protocol 2.3 ACK is [mode][passes][temp_c]: mode is what the device
+        # ACTUALLY selected (temp_policy may substitute) and temp_c its
+        # estimate -- logged per trial, per the lab discipline.
+        mode_used = r[2] if len(r) > 2 else a.mode
+        temp_c = None
+        if len(r) > 4 and r[4] != 0x7F:
+            temp_c = r[4] - 256 if r[4] > 127 else r[4]
+        print(f"START ok: mode {mode_used}, device expects {passes} passes"
+              + (f", device temp {temp_c} C" if temp_c is not None else ""))
+        if mode_used != a.mode:
+            print(f"  device SUBSTITUTED mode {mode_used} for {a.mode} "
+                  f"(temperature policy) -- aborting, frames were encoded for {a.mode}")
+            return 1
         if passes != mode.passes:
             print(f"  device says {passes}, config says {mode.passes} -- aborting")
             return 1

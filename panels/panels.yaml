@@ -55,6 +55,7 @@ panels:
         init: full
         passes: 1
       - name: colour16
+        color_scheme: 10   # BWRY16: what the mode RENDERS (0xAE field; never in 0x20)
         passes: 3
         # Each pass uses a different LUT *and* different pixel data; pass N's
         # code comes from palette[cell][N]. Passes 1-2 patch wave header byte 3
@@ -175,6 +176,7 @@ panels:
         init: full
         passes: 1
       - name: colour16
+        color_scheme: 10   # BWRY16: what the mode RENDERS (0xAE field; never in 0x20)
         passes: 3
         lut_per_pass: [wave_colour, wave_edit, wave_edit]
         vsn1_per_pass: [null, 0x14, 0x41]
@@ -267,6 +269,7 @@ panels:
         init: full
         passes: 1
       - name: colour16
+        color_scheme: 10   # BWRY16: what the mode RENDERS (0xAE field; never in 0x20)
         passes: 3
         lut_per_pass: [wave_colour, wave_edit, wave_edit]
         vsn1_per_pass: [null, 0x14, 0x41]
@@ -365,6 +368,7 @@ panels:
         init: full
         passes: 1
       - name: colour16
+        color_scheme: 10   # BWRY16: what the mode RENDERS (0xAE field; never in 0x20)
         passes: 3
         lut_per_pass: [wave_colour, wave_edit, wave_edit]
         vsn1_per_pass: [null, 0x14, 0x41]
