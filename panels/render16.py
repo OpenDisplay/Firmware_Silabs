@@ -102,13 +102,23 @@ async def run(a) -> int:
             # transport fault. Distinguishing the two cost an OTA cycle once.
             import numpy as _np
             from opendisplay.encoding.multipass import pack_pass
-            top, grid = 136, 4
+            grid = 4
             idx = _np.zeros((a.height, a.width), _np.uint8)
-            idx[:top] = 1
-            ch, cw = (a.height - top) // grid, a.width // grid
+            if a.rect:
+                # The rig camera does not always see the whole panel -- on the
+                # 7.5in it frames about a third of it. Patches outside the frame
+                # are unmeasurable, so place the grid where the camera is
+                # looking rather than re-aiming the camera.
+                x0, y0, x1, y1 = (int(v) for v in a.rect.split(","))
+                idx[:] = 1
+                ch, cw = (y1 - y0) // grid, (x1 - x0) // grid
+            else:
+                x0, y0 = 0, a.top
+                idx[:a.top] = 1
+                ch, cw = (a.height - a.top) // grid, a.width // grid
             for i in range(16):
                 r, c = divmod(i, grid)
-                idx[top + r * ch: top + (r + 1) * ch, c * cw:(c + 1) * cw] = i
+                idx[y0 + r * ch: y0 + (r + 1) * ch, x0 + c * cw: x0 + (c + 1) * cw] = i
             # No code_map: palette codes are already panel codes.
             frames = [pack_pass(idx, pal, p) for p in range(pal.passes)]
         else:
@@ -184,6 +194,13 @@ def main() -> int:
     ap.add_argument("--height", type=int, default=384)
     ap.add_argument("--pattern", default="index16", choices=("index16", "swatches", "gradient"))
     ap.add_argument("--no-dither", action="store_true")
+    ap.add_argument("--rect", default=None,
+                    help="x0,y0,x1,y1 to confine the index16 grid to, for panels "
+                         "the camera only partly sees. Overrides --top.")
+    ap.add_argument("--top", type=int, default=136,
+                    help="rows of white above the index16 grid. 136 keeps the "
+                         "grid in the camera-visible band of the 2.9in; short "
+                         "panels want 0 or the patches end up a few pixels tall.")
     ap.add_argument("--chunk", type=int, default=180)
     ap.add_argument("--ack-timeout", type=float, default=120.0,
                     help="per-chunk ack bound. Must exceed one panel refresh: "

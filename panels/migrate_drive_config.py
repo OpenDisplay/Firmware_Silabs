@@ -66,6 +66,23 @@ async def run(a) -> int:
             luts.append(_parse_display_lut(body))
 
     pal = json.loads(PALETTE_JSON.read_text())
+
+    # The palette's codes are RAW PANEL CODES, and the raw code -> colour
+    # assignment is panel-specific: the reference was measured on the 2.9"
+    # (code 2 = red, 3 = yellow) while the F52 family is the other way round.
+    # A panel that declares palette_code_swap gets the codes permuted into its
+    # own order, so the SAME Lab is reached by whatever code reaches it here.
+    import yaml  # noqa: PLC0415
+    doc = yaml.safe_load((HERE / "panels.yaml").read_text(encoding="utf-8"))
+    entry = next(p for p in doc["panels"] if int(str(p["id"]), 0) == a.panel_id)
+    swap = (entry.get("colour") or {}).get("palette_code_swap")
+    if swap:
+        print(f"  palette codes permuted through {swap} for this panel")
+
+    def codes_for(e):
+        c = tuple(e["codes"])
+        return tuple(swap[v] for v in c) if swap else c
+
     colour16 = next((m for m in modes if m.name == "colour16"), None)
     cals = []
     if colour16 is not None:
@@ -75,7 +92,7 @@ async def run(a) -> int:
             entry_count=len(pal["entries"]),
             measured=bool(a.measured),
             lab=[tuple(e["lab"]) for e in pal["entries"]],
-            codes=[tuple(e["codes"]) for e in pal["entries"]],
+            codes=[codes_for(e) for e in pal["entries"]],
         ))
 
     info = load_landing().parse_landing_url(a.link)
