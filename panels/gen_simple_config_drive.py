@@ -6,8 +6,9 @@ Until now a display preset carried only geometry, so a device configured by the
 toolbox had no drive data at all -- and with bb_epaper removed from the
 firmware, no drive data means no panel.
 
-This writes the 0xB1 / 0xAE / 0xAF packets into each display preset that
-panels.yaml describes, as {"pid": "<decimal>", "raw": "<body hex>"} entries.
+This writes the 0xB1 / 0xAE / 0xAF packets -- plus, for a panel with a
+multi-pass mode, the 0xB0 palette that mode needs -- into each display preset
+that panels.yaml describes, as {"pid": "<decimal>", "raw": "<body hex>"} entries.
 Since structs 2.2 the drive packets are LENGTH-PREFIXED with variable bodies,
 so the toolbox carries them as OPAQUE blobs and frames them itself
 ([seq][id][length:2 LE][body]) -- the schema is never consulted, which also
@@ -45,6 +46,13 @@ PID_FIELD = "panelIcType"
 PKT_DISPLAY_MODE = "174"   # 0xAE
 PKT_DISPLAY_LUT = "175"    # 0xAF
 PKT_DISPLAY_PANEL = "177"  # 0xB1
+PKT_DISPLAY_CAL = "176"    # 0xB0
+
+# The reference 16-colour palette, the same file migrate_drive_config.py writes.
+# A multi-pass mode with no 0xB0 is not uploadable from the web tool (the
+# per-pass codes are what the encoder needs), so a preset without it configures
+# a device whose colour16 mode can never be used.
+PALETTE_JSON = HERE / "palette16_measured.json"
 
 
 def _hex(b: bytes) -> str:
@@ -79,6 +87,46 @@ def drive_packets_for(panel_id: int, waves: dict[str, bytes]) -> list[dict]:
     return out
 
 
+def calibration_packets_for(panel_entry: dict, drive: list[dict]) -> list[dict]:
+    """-> the 0xB0 entry for each multi-pass mode in `drive`, as migrate_drive_config.py builds it.
+
+    The palette is BORROWED (measured on ODBB1B76), so it ships measured=0. Its
+    codes are raw panel codes and the raw code -> colour assignment is
+    panel-specific, so a panel declaring palette_code_swap gets them permuted.
+    """
+    from opendisplay.models.config import DisplayCalibrationInfo
+    from opendisplay.protocol.config_parser import _parse_display_mode
+    from opendisplay.protocol.config_serializer import serialize_display_calibration
+
+    pal = json.loads(PALETTE_JSON.read_text())
+    swap = (panel_entry.get("colour") or {}).get("palette_code_swap")
+
+    def codes_for(e):
+        c = tuple(e["codes"])
+        return tuple(swap[v] for v in c) if swap else c
+
+    out: list[dict] = []
+    for dp in drive:
+        if dp["pid"] != PKT_DISPLAY_MODE:
+            continue
+        mode = _parse_display_mode(bytes.fromhex(dp["raw"]))
+        if mode.passes <= 1:
+            continue
+        if len(pal["entries"][0]["codes"]) != mode.passes:
+            raise SystemExit(f"palette has {len(pal['entries'][0]['codes'])}-pass codes, "
+                             f"mode {mode.name!r} has {mode.passes} passes")
+        cal = DisplayCalibrationInfo(
+            instance_number=mode.instance_number,
+            mode_index=mode.mode_index,
+            entry_count=len(pal["entries"]),
+            measured=False,
+            lab=[tuple(e["lab"]) for e in pal["entries"]],
+            codes=[codes_for(e) for e in pal["entries"]],
+        )
+        out.append({"pid": PKT_DISPLAY_CAL, "raw": _hex(serialize_display_calibration(cal))})
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true",
@@ -104,6 +152,7 @@ def main() -> int:
         if ic_num not in by_ic:
             continue
         new = drive_packets_for(ic_num, waves)
+        new += calibration_packets_for(by_ic[ic_num], new)
         if entry.get("drivePackets") != new:
             entry["drivePackets"] = new
             changed.append(f"{entry['id']} (panel_ic_type {ic_num}, "
