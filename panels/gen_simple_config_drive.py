@@ -48,11 +48,12 @@ PKT_DISPLAY_LUT = "175"    # 0xAF
 PKT_DISPLAY_PANEL = "177"  # 0xB1
 PKT_DISPLAY_CAL = "176"    # 0xB0
 
-# The reference 16-colour palette, the same file migrate_drive_config.py writes.
+# The reference BWRY 16-colour palette for every panel, the same file
+# migrate_drive_config.py writes (measured on ODBEEBA6; see that file).
 # A multi-pass mode with no 0xB0 is not uploadable from the web tool (the
 # per-pass codes are what the encoder needs), so a preset without it configures
 # a device whose colour16 mode can never be used.
-PALETTE_JSON = HERE / "palette16_measured.json"
+PALETTE_JSON = HERE / "palette16_photo_ODBEEBA6.json"
 
 
 def _hex(b: bytes) -> str:
@@ -90,7 +91,7 @@ def drive_packets_for(panel_id: int, waves: dict[str, bytes]) -> list[dict]:
 def calibration_packets_for(panel_entry: dict, drive: list[dict]) -> list[dict]:
     """-> the 0xB0 entry for each multi-pass mode in `drive`, as migrate_drive_config.py builds it.
 
-    The palette is BORROWED (measured on ODBB1B76), so it ships measured=0. Its
+    The palette is BORROWED (measured on ODBEEBA6), so it ships measured=0. Its
     codes are raw panel codes and the raw code -> colour assignment is
     panel-specific, so a panel declaring palette_code_swap gets them permuted.
     """

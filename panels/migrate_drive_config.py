@@ -6,9 +6,9 @@ This is the fleet-migration tool DRIVER_MIGRATION.md §7/§8 calls for:
     interrogate            -> the parser DROPS the burned Rev 1 packets
                               (0x2E-0x31) on sight, so clearing is implicit
     panels.yaml            -> fresh 0xAE/0xAF/0xB1 via the SHIPPING encoder
-    palette JSON           -> 0xB0 calibration (measured on ODBB1B76; every
-                              other unit carries it as a borrowed placeholder,
-                              measured=0, same as before the renumbering)
+    palette JSON           -> 0xB0 calibration (measured on ODBEEBA6 from a
+                              photo of the test swatches; every other unit
+                              carries it as a borrowed placeholder, measured=0)
     write_config           -> read back and verify the drive data is present
 
 Idempotent by construction: the models are REPLACED, not appended, so running
@@ -33,7 +33,11 @@ sys.path.insert(1, "/home/jonas/Desktop/opendisplay/en05_ep397yr_uart/host")
 sys.path.insert(2, str(HERE.parent / "scripts"))
 sys.path.insert(3, str(HERE))
 
-PALETTE_JSON = HERE / "palette16_measured.json"
+# The reference BWRY 16-colour palette for EVERY panel, permuted per panel by
+# palette_code_swap. palette16_measured.json (rig, ODBB1B76) is kept for the
+# record only: it has entries 2/3 (yellow/red) backwards and is heavily
+# compressed by rig glare.
+PALETTE_JSON = HERE / "palette16_photo_ODBEEBA6.json"
 
 
 async def run(a) -> int:
@@ -133,7 +137,7 @@ def main() -> int:
     ap.add_argument("link")
     ap.add_argument("panel_id", type=lambda s: int(s, 0))
     ap.add_argument("--measured", action="store_true",
-                    help="palette was measured on THIS unit (ODBB1B76 only)")
+                    help="palette was measured on THIS unit (ODBEEBA6 only)")
     return asyncio.run(run(ap.parse_args()))
 
 
